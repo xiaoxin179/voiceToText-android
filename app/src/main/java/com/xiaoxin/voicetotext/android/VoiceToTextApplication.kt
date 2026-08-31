@@ -1,16 +1,26 @@
 package com.xiaoxin.voicetotext.android
 
 import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.app.Application
 import android.content.ComponentCallbacks2
 import android.os.Build
 import com.xiaoxin.voicetotext.android.debug.DebugLogger
+import com.xiaoxin.voicetotext.android.asr.GpuSafetyPolicy
+import java.io.ByteArrayOutputStream
 
 class VoiceToTextApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         DebugLogger.initialize(this)
-        logPreviousProcessExit()
+        val previousExitReason = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val previousExit = previousProcessExit()
+            logPreviousProcessExit(previousExit)
+            previousExit?.reason
+        } else {
+            null
+        }
+        GpuSafetyPolicy.initialize(this, previousExitReason)
         installCrashLogger()
         DebugLogger.log("LIFECYCLE", "Application 创建 pid=${android.os.Process.myPid()}")
     }
@@ -37,16 +47,37 @@ class VoiceToTextApplication : Application() {
         }
     }
 
-    private fun logPreviousProcessExit() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    @android.annotation.TargetApi(Build.VERSION_CODES.R)
+    private fun previousProcessExit(): ApplicationExitInfo? {
         val manager = getSystemService(ActivityManager::class.java)
-        val exit = runCatching {
+        return runCatching {
             manager.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()
-        }.getOrNull() ?: return
+        }.getOrNull()
+    }
+
+    @android.annotation.TargetApi(Build.VERSION_CODES.R)
+    private fun logPreviousProcessExit(exit: ApplicationExitInfo?) {
+        if (exit == null) return
+        val trace = runCatching {
+            exit.traceInputStream?.use(::readBoundedText)
+        }.getOrNull()
         DebugLogger.startupDiagnostic(
             "reason=${exitReasonName(exit.reason)} status=${exit.status} importance=${exit.importance} " +
-                "timestamp=${exit.timestamp} pssKb=${exit.pss} rssKb=${exit.rss} description=${exit.description}",
+                "timestamp=${exit.timestamp} pssKb=${exit.pss} rssKb=${exit.rss} " +
+                "description=${exit.description} trace=${if (trace.isNullOrBlank()) "unavailable" else "attached"}",
+            trace,
         )
+    }
+
+    private fun readBoundedText(input: java.io.InputStream): String {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8 * 1024)
+        while (output.size() < MAX_EXIT_TRACE_BYTES) {
+            val count = input.read(buffer, 0, minOf(buffer.size, MAX_EXIT_TRACE_BYTES - output.size()))
+            if (count <= 0) break
+            output.write(buffer, 0, count)
+        }
+        return output.toString(Charsets.UTF_8.name())
     }
 
     private fun exitReasonName(reason: Int): String = when (reason) {
@@ -88,5 +119,6 @@ class VoiceToTextApplication : Application() {
 
     private companion object {
         const val MIB = 1024L * 1024L
+        const val MAX_EXIT_TRACE_BYTES = 256 * 1024
     }
 }

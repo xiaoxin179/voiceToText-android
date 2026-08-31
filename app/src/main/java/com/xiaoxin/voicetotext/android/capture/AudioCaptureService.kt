@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.xiaoxin.voicetotext.android.R
 import com.xiaoxin.voicetotext.android.asr.LocalWhisperEngine
+import com.xiaoxin.voicetotext.android.asr.GpuSafetyPolicy
 import com.xiaoxin.voicetotext.android.debug.DebugLogger
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
@@ -115,11 +116,13 @@ class AudioCaptureService : Service() {
 
         val projectionResult = intent.getIntExtra(EXTRA_PROJECTION_RESULT, 0)
         val projectionData = intent.getProjectionDataCompat(EXTRA_PROJECTION_DATA)
-        val sessionDescription = "source=$source model=${File(modelPath).name} startedAt=${System.currentTimeMillis()}"
+        val useGpu = GpuSafetyPolicy.shouldUseGpu()
+        val sessionDescription = "source=$source model=${File(modelPath).name} gpuRequested=$useGpu " +
+            "startedAt=${System.currentTimeMillis()}"
         DebugLogger.markCaptureActive(sessionDescription)
         captureJob = serviceScope.launch {
             try {
-                runCapture(source, modelPath, projectionResult, projectionData)
+                runCapture(source, modelPath, useGpu, projectionResult, projectionData)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -148,6 +151,7 @@ class AudioCaptureService : Service() {
     private suspend fun runCapture(
         source: String,
         modelPath: String,
+        useGpu: Boolean,
         projectionResult: Int,
         projectionData: Intent?,
     ) = coroutineScope {
@@ -200,7 +204,8 @@ class AudioCaptureService : Service() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             LocalWhisperEngine().use { engine ->
                 val loadStartedAt = SystemClock.elapsedRealtime()
-                engine.open(modelPath)
+                DebugLogger.log("ASR", "开始加载模型 model=$modelName gpuRequested=$useGpu flashAttention=false")
+                engine.open(modelPath, useGpu)
                 TranscriptionSession.backend(engine.backend)
                 DebugLogger.log(
                     "ASR",

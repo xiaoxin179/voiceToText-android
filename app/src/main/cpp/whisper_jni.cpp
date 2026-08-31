@@ -66,18 +66,21 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
         JNIEnv *env,
         jclass,
-        jstring model_path) {
+        jstring model_path,
+        jboolean use_gpu) {
     const std::string path = to_utf8(env, model_path);
     if (path.empty()) {
         throw_illegal_state(env, "Whisper model path is empty");
         return 0;
     }
 
-    load_accelerated_backend();
-    std::string backend = available_gpu_backend_name();
+    const bool gpu_requested = use_gpu == JNI_TRUE;
+    if (gpu_requested) load_accelerated_backend();
+    std::string backend = gpu_requested ? available_gpu_backend_name() : std::string();
     whisper_context_params context_params = whisper_context_default_params();
     context_params.use_gpu = !backend.empty();
-    context_params.flash_attn = context_params.use_gpu;
+    // Flash Attention is disabled until it is stable across Android Vulkan drivers.
+    context_params.flash_attn = false;
     auto *context = whisper_init_from_file_with_params(path.c_str(), context_params);
     if (context == nullptr && !backend.empty()) {
         __android_log_print(ANDROID_LOG_WARN, kLogTag, "Vulkan model init failed; retrying on CPU");
@@ -93,7 +96,9 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
 
     auto *native_context = new NativeWhisperContext();
     native_context->context = context;
-    native_context->backend = backend.empty() ? "CPU 回退" : backend;
+    native_context->backend = backend.empty()
+            ? (gpu_requested ? "CPU 回退" : "CPU 安全模式")
+            : backend;
     __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,

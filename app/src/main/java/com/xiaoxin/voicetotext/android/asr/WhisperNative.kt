@@ -3,7 +3,7 @@ package com.xiaoxin.voicetotext.android.asr
 internal class WhisperNative private constructor() {
     companion object {
         @JvmStatic
-        external fun nativeInit(modelPath: String): Long
+        external fun nativeInit(modelPath: String, useGpu: Boolean): Long
 
         @JvmStatic
         external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String): String
@@ -22,10 +22,10 @@ class LocalWhisperEngine : AutoCloseable {
     var backend: String = "未初始化"
         private set
 
-    fun open(modelPath: String) {
+    fun open(modelPath: String, useGpu: Boolean = true) {
         close()
         loadNativeLibrary()
-        handle = WhisperNative.nativeInit(modelPath)
+        handle = WhisperNative.nativeInit(modelPath, useGpu)
         check(handle != 0L) { "无法加载本地 Whisper 模型：$modelPath" }
         backend = WhisperNative.nativeGetBackend(handle)
     }

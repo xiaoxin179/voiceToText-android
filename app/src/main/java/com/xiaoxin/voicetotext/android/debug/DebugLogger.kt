@@ -23,6 +23,8 @@ data class DebugLogState(
 )
 
 object DebugLogger {
+    private data class StartupDiagnostic(val message: String, val details: String?)
+
     private const val PREFERENCES_NAME = "voice_to_text_preferences"
     private const val ENABLED_KEY = "debug_logging_enabled"
     private const val CAPTURE_ACTIVE_KEY = "debug_capture_active"
@@ -33,9 +35,11 @@ object DebugLogger {
     private val eventStampFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
     private val initialized = AtomicBoolean(false)
     private val fileLock = Any()
-    private val pendingStartupDiagnostics = mutableListOf<String>()
+    private val pendingStartupDiagnostics = mutableListOf<StartupDiagnostic>()
     private val _state = MutableStateFlow(DebugLogState())
     private lateinit var appContext: Context
+    @Volatile
+    private var interruptedCaptureAtStartup = false
     @Volatile
     private var currentFile: File? = null
 
@@ -44,8 +48,9 @@ object DebugLogger {
     fun initialize(context: Context) {
         if (!initialized.compareAndSet(false, true)) return
         appContext = context.applicationContext
-        val enabled = appContext.getSharedPreferences(PREFERENCES_NAME, 0)
-            .getBoolean(ENABLED_KEY, false)
+        val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        interruptedCaptureAtStartup = preferences.getBoolean(CAPTURE_ACTIVE_KEY, false)
+        val enabled = preferences.getBoolean(ENABLED_KEY, false)
         if (enabled) {
             startSession("应用进程启动")
             reportInterruptedCapture()
@@ -100,15 +105,18 @@ object DebugLogger {
         }
     }
 
-    fun startupDiagnostic(message: String) {
+    fun startupDiagnostic(message: String, details: String? = null) {
         if (_state.value.enabled) {
             log("PREVIOUS_EXIT", message)
+            appendDiagnosticDetails(details)
         } else {
             synchronized(pendingStartupDiagnostics) {
-                pendingStartupDiagnostics += message
+                pendingStartupDiagnostics += StartupDiagnostic(message, details)
             }
         }
     }
+
+    fun hadInterruptedCaptureAtStartup(): Boolean = interruptedCaptureAtStartup
 
     fun markCaptureActive(description: String) {
         if (!initialized.get()) return
@@ -197,7 +205,28 @@ object DebugLogger {
         val diagnostics = synchronized(pendingStartupDiagnostics) {
             pendingStartupDiagnostics.toList().also { pendingStartupDiagnostics.clear() }
         }
-        diagnostics.forEach { message -> log("PREVIOUS_EXIT", message) }
+        diagnostics.forEach { diagnostic ->
+            log("PREVIOUS_EXIT", diagnostic.message)
+            appendDiagnosticDetails(diagnostic.details)
+        }
+    }
+
+    private fun appendDiagnosticDetails(details: String?) {
+        if (details.isNullOrBlank()) return
+        val target = currentFile ?: return
+        synchronized(fileLock) {
+            runCatching {
+                target.appendText(
+                    buildString {
+                        appendLine("----- previous process trace begin -----")
+                        appendLine(details.take(MAX_DIAGNOSTIC_DETAILS_CHARS))
+                        appendLine("----- previous process trace end -----")
+                    },
+                )
+            }.onFailure { writeError ->
+                _state.update { it.copy(error = "崩溃堆栈写入失败：${writeError.message}") }
+            }
+        }
     }
 
     private fun sessionHeader(reason: String): String = buildString {
@@ -241,4 +270,6 @@ object DebugLogger {
         error.printStackTrace(PrintWriter(buffer))
         return buffer.toString().lineSequence().take(40).joinToString("\n")
     }
+
+    private const val MAX_DIAGNOSTIC_DETAILS_CHARS = 256 * 1024
 }
