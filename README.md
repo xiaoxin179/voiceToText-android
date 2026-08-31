@@ -19,6 +19,7 @@ DeepSeek, or any cloud transcription service.
 - Preserve the recognition text as returned by the local model.
 - Save the raw transcript on the phone for later processing on a computer.
 - Show live input-signal, captured-time, and processed-chunk diagnostics.
+- Separate listening and local-model management into a two-tab bottom navigation.
 
 The first implementation targets Android 10 or newer. The debug build includes
 `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` native libraries; arm64 is the

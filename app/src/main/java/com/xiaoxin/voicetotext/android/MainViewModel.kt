@@ -2,7 +2,6 @@ package com.xiaoxin.voicetotext.android
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import com.xiaoxin.voicetotext.android.model.DownloadPhase
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.model.ModelDefinition
 import com.xiaoxin.voicetotext.android.model.ModelDownloadManager
@@ -41,8 +40,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun isInstalled(model: ModelDefinition): Boolean = modelManager.isInstalled(model)
 
-    fun downloadSelected() {
-        modelManager.startOrResume(selectedModel())
+    fun modelSizeBytes(model: ModelDefinition): Long =
+        if (modelManager.isInstalled(model)) modelManager.modelFile(model).length() else 0L
+
+    fun downloadModel(modelId: String) {
+        val model = ModelCatalog.all.firstOrNull { it.id == modelId } ?: return
+        modelManager.startOrResume(model)
     }
 
     fun pauseDownload() {
@@ -52,10 +55,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearTranscript() {
         TranscriptionSession.clear()
     }
-
-    fun selectedDownloadIsActive(): Boolean =
-        downloadState.value.modelId == selectedModel().id &&
-            downloadState.value.phase == DownloadPhase.DOWNLOADING
 
     override fun onCleared() {
         modelManager.close()

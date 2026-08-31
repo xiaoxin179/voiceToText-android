@@ -78,6 +78,12 @@ object TranscriptionSession {
     }
 
     fun clear() {
-        _state.value = TranscriptionState()
+        _state.update { current ->
+            if (current.running) {
+                current.copy(rawText = "", transcriptPath = null, error = null)
+            } else {
+                TranscriptionState()
+            }
+        }
     }
 }
