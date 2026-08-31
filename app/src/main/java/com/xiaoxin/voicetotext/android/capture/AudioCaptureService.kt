@@ -17,7 +17,9 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -31,6 +33,7 @@ import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +42,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 
@@ -50,7 +54,10 @@ class AudioCaptureService : Service() {
     private var captureJob: Job? = null
     private var audioRecord: AudioRecord? = null
     private var mediaProjection: MediaProjection? = null
+    private var mediaProjectionCallback: MediaProjection.Callback? = null
     private val stopRequested = AtomicBoolean(false)
+    private val releasingProjection = AtomicBoolean(false)
+    private val terminationReason = AtomicReference("capture_completed")
 
     override fun onCreate() {
         super.onCreate()
@@ -71,6 +78,8 @@ class AudioCaptureService : Service() {
     private fun startCapture(intent: Intent) {
         stopCapture(stopService = false)
         stopRequested.set(false)
+        releasingProjection.set(false)
+        terminationReason.set("capture_completed")
         val source = intent.getStringExtra(EXTRA_SOURCE) ?: SOURCE_SYSTEM
         val modelPath = intent.getStringExtra(EXTRA_MODEL_PATH)
         DebugLogger.log("CAPTURE", "准备监听 source=$source model=${modelPath?.let { File(it).name }}")
@@ -106,22 +115,31 @@ class AudioCaptureService : Service() {
 
         val projectionResult = intent.getIntExtra(EXTRA_PROJECTION_RESULT, 0)
         val projectionData = intent.getProjectionDataCompat(EXTRA_PROJECTION_DATA)
+        val sessionDescription = "source=$source model=${File(modelPath).name} startedAt=${System.currentTimeMillis()}"
+        DebugLogger.markCaptureActive(sessionDescription)
         captureJob = serviceScope.launch {
             try {
                 runCapture(source, modelPath, projectionResult, projectionData)
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 Log.e(TAG, "audio capture failed", error)
+                terminationReason.set("capture_error:${error.javaClass.simpleName}")
                 DebugLogger.log("ERROR", "音频监听异常", error)
                 TranscriptionSession.failed(error.message ?: "音频监听失败")
             } finally {
-                DebugLogger.log("SERVICE", "释放音频采集资源")
+                DebugLogger.log("SERVICE", "释放音频采集资源 reason=${terminationReason.get()}")
                 audioRecord?.release()
                 audioRecord = null
+                releasingProjection.set(true)
+                mediaProjectionCallback?.let { callback ->
+                    runCatching { mediaProjection?.unregisterCallback(callback) }
+                }
+                mediaProjectionCallback = null
                 mediaProjection?.stop()
                 mediaProjection = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                DebugLogger.markCaptureFinished(sessionDescription, terminationReason.get())
                 stopSelf()
             }
         }
@@ -138,6 +156,24 @@ class AudioCaptureService : Service() {
             val manager = getSystemService(MediaProjectionManager::class.java)
             manager.getMediaProjection(projectionResult, projectionData).also {
                 mediaProjection = it
+                val callback = object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        if (releasingProjection.get()) {
+                            DebugLogger.log("PROJECTION", "MediaProjection 随服务清理正常停止")
+                            return
+                        }
+                        terminationReason.set("media_projection_revoked")
+                        DebugLogger.log(
+                            "PROJECTION",
+                            "MediaProjection 被系统或用户撤销，系统音频采集将结束",
+                        )
+                        TranscriptionSession.failed("系统已停止屏幕/音频捕获授权")
+                        stopRequested.set(true)
+                        audioRecord?.let { record -> runCatching { record.stop() } }
+                    }
+                }
+                mediaProjectionCallback = callback
+                it.registerCallback(callback, Handler(Looper.getMainLooper()))
                 DebugLogger.log("CAPTURE", "MediaProjection 已建立")
             }
         } else {
@@ -262,9 +298,26 @@ class AudioCaptureService : Service() {
             }
         }
 
+        val monitor = launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(DEBUG_HEARTBEAT_INTERVAL_MILLIS)
+                val runtime = Runtime.getRuntime()
+                val state = TranscriptionSession.state.value
+                DebugLogger.log(
+                    "HEARTBEAT",
+                    "serviceAlive=true source=$source audioState=${audioRecord?.recordingState} " +
+                        "capturedSeconds=${state.capturedSeconds} queued=${state.queuedChunks} " +
+                        "processed=${state.processedChunks} rms=${state.inputRms} " +
+                        "heapUsedMb=${(runtime.totalMemory() - runtime.freeMemory()) / MIB} " +
+                        "heapMaxMb=${runtime.maxMemory() / MIB}",
+                )
+            }
+        }
+
         try {
             reader.join()
         } finally {
+            monitor.cancel()
             reader.cancel()
             runCatching { record.stop() }
             chunker.flush()
@@ -342,6 +395,7 @@ class AudioCaptureService : Service() {
 
     private fun stopCapture(stopService: Boolean = true) {
         DebugLogger.log("CAPTURE", "停止请求 stopService=$stopService active=${captureJob != null}")
+        terminationReason.set(if (stopService) "user_stop" else "service_restart_or_destroy")
         stopRequested.set(true)
         audioRecord?.let { runCatching { it.stop() } }
         if (stopService) {
@@ -388,6 +442,26 @@ class AudioCaptureService : Service() {
         super.onDestroy()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        DebugLogger.log("SERVICE", "应用任务从最近任务中移除，前台监听服务仍应继续运行")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        val runtime = Runtime.getRuntime()
+        DebugLogger.log(
+            "MEMORY",
+            "AudioCaptureService onTrimMemory level=$level heapUsedMb=" +
+                "${(runtime.totalMemory() - runtime.freeMemory()) / MIB} heapMaxMb=${runtime.maxMemory() / MIB}",
+        )
+        super.onTrimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        DebugLogger.log("MEMORY", "AudioCaptureService 收到 onLowMemory")
+        super.onLowMemory()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
@@ -406,6 +480,8 @@ class AudioCaptureService : Service() {
         private const val MIN_AUDIO_RMS = 0.001f
         private const val NO_SIGNAL_WARNING_SECONDS = 3
         private const val DEBUG_AUDIO_INTERVAL_SECONDS = 5
+        private const val DEBUG_HEARTBEAT_INTERVAL_MILLIS = 5_000L
+        private const val MIB = 1024L * 1024L
 
         fun start(
             context: Context,

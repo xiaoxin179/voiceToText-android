@@ -8,7 +8,6 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,14 +25,15 @@ data class DebugLogState(
 object DebugLogger {
     private const val PREFERENCES_NAME = "voice_to_text_preferences"
     private const val ENABLED_KEY = "debug_logging_enabled"
+    private const val CAPTURE_ACTIVE_KEY = "debug_capture_active"
+    private const val CAPTURE_DESCRIPTION_KEY = "debug_capture_description"
     private const val MAX_RECENT_ENTRIES = 120
     private const val MAX_LOG_FILES = 5
     private val fileStampFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
     private val eventStampFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
     private val initialized = AtomicBoolean(false)
-    private val writer = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "debug-log-writer")
-    }
+    private val fileLock = Any()
+    private val pendingStartupDiagnostics = mutableListOf<String>()
     private val _state = MutableStateFlow(DebugLogState())
     private lateinit var appContext: Context
     @Volatile
@@ -48,6 +48,8 @@ object DebugLogger {
             .getBoolean(ENABLED_KEY, false)
         if (enabled) {
             startSession("应用进程启动")
+            reportInterruptedCapture()
+            flushStartupDiagnostics()
         } else {
             restoreLatestLog()
         }
@@ -62,6 +64,8 @@ object DebugLogger {
             .apply()
         if (enabled) {
             startSession("用户开启调试日志")
+            reportInterruptedCapture()
+            flushStartupDiagnostics()
         } else {
             log("LOGGER", "用户关闭调试日志")
             _state.update { it.copy(enabled = false) }
@@ -82,7 +86,7 @@ object DebugLogger {
         }
         val stackTrace = error?.let(::stackTrace)
         val target = currentFile ?: return
-        writer.execute {
+        synchronized(fileLock) {
             runCatching {
                 target.appendText(
                     buildString {
@@ -96,10 +100,43 @@ object DebugLogger {
         }
     }
 
+    fun startupDiagnostic(message: String) {
+        if (_state.value.enabled) {
+            log("PREVIOUS_EXIT", message)
+        } else {
+            synchronized(pendingStartupDiagnostics) {
+                pendingStartupDiagnostics += message
+            }
+        }
+    }
+
+    fun markCaptureActive(description: String) {
+        if (!initialized.get()) return
+        appContext.getSharedPreferences(PREFERENCES_NAME, 0).edit()
+            .putBoolean(CAPTURE_ACTIVE_KEY, true)
+            .putString(CAPTURE_DESCRIPTION_KEY, description)
+            .commit()
+        log("DIAGNOSTIC", "写入监听活动标记 $description")
+    }
+
+    fun markCaptureFinished(description: String, reason: String) {
+        if (!initialized.get()) return
+        val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        if (preferences.getString(CAPTURE_DESCRIPTION_KEY, null) != description) {
+            log("DIAGNOSTIC", "忽略过期监听结束标记 session=$description reason=$reason")
+            return
+        }
+        preferences.edit()
+            .putBoolean(CAPTURE_ACTIVE_KEY, false)
+            .remove(CAPTURE_DESCRIPTION_KEY)
+            .commit()
+        log("DIAGNOSTIC", "清除监听活动标记 session=$description reason=$reason")
+    }
+
     fun clear() {
         val target = currentFile ?: return
         _state.update { it.copy(eventCount = 0, lastEventAt = null, recentEntries = emptyList(), error = null) }
-        writer.execute {
+        synchronized(fileLock) {
             runCatching { target.writeText(sessionHeader("日志已清空")) }
                 .onFailure { writeError ->
                     _state.update { it.copy(error = "日志清空失败：${writeError.message}") }
@@ -133,13 +170,34 @@ object DebugLogger {
         }
         currentFile = file
         _state.value = DebugLogState(enabled = true, filePath = file.absolutePath)
-        writer.execute {
+        synchronized(fileLock) {
             runCatching { file.writeText(sessionHeader(reason)) }
                 .onFailure { writeError ->
                     _state.update { it.copy(error = "日志初始化失败：${writeError.message}") }
                 }
         }
         log("LOGGER", reason)
+    }
+
+    private fun reportInterruptedCapture() {
+        val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, 0)
+        if (!preferences.getBoolean(CAPTURE_ACTIVE_KEY, false)) return
+        val description = preferences.getString(CAPTURE_DESCRIPTION_KEY, "未知监听会话")
+        log(
+            "ABNORMAL_EXIT",
+            "检测到上一次监听没有正常结束，进程可能崩溃、被系统回收或被强制停止；session=$description",
+        )
+        preferences.edit()
+            .putBoolean(CAPTURE_ACTIVE_KEY, false)
+            .remove(CAPTURE_DESCRIPTION_KEY)
+            .commit()
+    }
+
+    private fun flushStartupDiagnostics() {
+        val diagnostics = synchronized(pendingStartupDiagnostics) {
+            pendingStartupDiagnostics.toList().also { pendingStartupDiagnostics.clear() }
+        }
+        diagnostics.forEach { message -> log("PREVIOUS_EXIT", message) }
     }
 
     private fun sessionHeader(reason: String): String = buildString {

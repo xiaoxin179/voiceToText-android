@@ -184,6 +184,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun copyDebugLog() {
+        DebugLogger.log("UI", "生成并复制调试日志快照")
         val content = DebugLogger.readCurrentLog()
         if (content.isBlank()) {
             toast("当前没有可复制的日志")
@@ -191,11 +192,11 @@ class MainActivity : ComponentActivity() {
         }
         getSystemService(ClipboardManager::class.java)
             .setPrimaryClip(ClipData.newPlainText("voiceToText 调试日志", content))
-        DebugLogger.log("UI", "复制调试日志")
         toast("日志已复制")
     }
 
     private fun shareDebugLog() {
+        DebugLogger.log("UI", "生成并分享调试日志快照")
         val file = DebugLogger.currentLogFile()
         if (file == null) {
             toast("当前没有可分享的日志")
@@ -208,7 +209,6 @@ class MainActivity : ComponentActivity() {
             clipData = ClipData.newRawUri("voiceToText 调试日志", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        DebugLogger.log("UI", "分享调试日志 file=${file.name}")
         startActivity(Intent.createChooser(intent, "分享调试日志"))
     }
 
