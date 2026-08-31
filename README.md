@@ -11,7 +11,10 @@ DeepSeek, or any cloud transcription service.
 - Select either the phone microphone or the phone's internal playback audio.
 - Run Whisper locally on the Android device through `whisper.cpp`.
 - Select a local model and keep the selected model in the app's fixed model directory.
-- Download models with progress reporting, pause/resume, and HTTP Range based resume.
+- Download models with progress reporting, pause/resume, HTTP Range based resume,
+  and automatic fallback between the mainland-friendly `hf-mirror.com` endpoint
+  and the official Hugging Face endpoint.
+- Show download state immediately after tapping, including network wait and failures.
 - Preserve the recognition text as returned by the local model.
 - Save the raw transcript on the phone for later processing on a computer.
 
@@ -39,6 +42,12 @@ release. Keeping this pinned source in the repository makes multi-ABI builds
 reproducible without a build-time GitHub clone. The Android app owns the JNI
 adapter and does not copy the Windows project's Python runtime or service
 layer.
+
+The downloadable Whisper files come from the `ggerganov/whisper.cpp` model
+repository on Hugging Face. The app tries `hf-mirror.com` first because direct
+access to Hugging Face can time out on some mobile networks, then falls back to
+the official Hugging Face URL. Both sources provide the same GGML model files;
+the mirror is only a transport fallback, not a different model.
 
 ## Build
 

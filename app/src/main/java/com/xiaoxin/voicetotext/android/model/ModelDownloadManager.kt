@@ -4,9 +4,14 @@ import android.content.Context
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -40,6 +45,13 @@ private class DownloadControl {
     val pauseRequested = AtomicBoolean(false)
 }
 
+private class HttpStatusException(val statusCode: Int) : IOException("模型服务器返回 HTTP $statusCode")
+
+private enum class DownloadAttemptResult {
+    COMPLETED,
+    PAUSED,
+}
+
 class ModelDownloadManager(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadExecutor()
@@ -57,23 +69,54 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
 
     fun modelFile(model: ModelDefinition): File = File(modelsDirectory, model.fileName)
 
-    fun isInstalled(model: ModelDefinition): Boolean = modelFile(model).isFile && modelFile(model).length() > 0L
+    fun isInstalled(model: ModelDefinition): Boolean {
+        val file = modelFile(model)
+        return file.isFile && file.length() in 1L..model.maxDownloadBytes
+    }
 
     fun startOrResume(model: ModelDefinition) {
+        val destination = modelFile(model)
+        if (destination.isFile && destination.length() > model.maxDownloadBytes) {
+            destination.delete()
+        }
         if (isInstalled(model)) {
             _state.value = ModelDownloadState(
                 modelId = model.id,
                 phase = DownloadPhase.COMPLETED,
-                downloadedBytes = modelFile(model).length(),
-                totalBytes = modelFile(model).length(),
+                downloadedBytes = destination.length(),
+                totalBytes = destination.length(),
             )
+            return
+        }
+
+        if (_state.value.modelId == model.id && _state.value.phase == DownloadPhase.DOWNLOADING) {
             return
         }
 
         val control = DownloadControl()
         val oldControl = currentControl.getAndSet(control)
         oldControl?.pauseRequested?.set(true)
-        executor.submit { download(model, control) }
+        val partial = partialFile(model)
+        val previousState = _state.value
+        val downloadedBytes = sanitizePartial(partial, model)
+        _state.value = ModelDownloadState(
+            modelId = model.id,
+            phase = DownloadPhase.DOWNLOADING,
+            downloadedBytes = downloadedBytes,
+            totalBytes = if (previousState.modelId == model.id) previousState.totalBytes else -1L,
+        )
+        try {
+            executor.submit { download(model, control) }
+        } catch (error: RuntimeException) {
+            currentControl.compareAndSet(control, null)
+            _state.value = ModelDownloadState(
+                modelId = model.id,
+                phase = DownloadPhase.FAILED,
+                downloadedBytes = sanitizePartial(partial, model),
+                totalBytes = -1L,
+                error = error.message ?: "无法启动模型下载",
+            )
+        }
     }
 
     fun pause() {
@@ -97,13 +140,61 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
 
     private fun download(model: ModelDefinition, control: DownloadControl) {
         val destination = modelFile(model)
-        val partial = File(destination.path + ".part")
-        var connection: HttpURLConnection? = null
+        val partial = partialFile(model)
+        var lastError: Exception? = null
 
         try {
-            var existingBytes = partial.length()
-            connection = (URL(model.url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20_000
+            for ((index, url) in model.downloadUrls.withIndex()) {
+                if (control.pauseRequested.get()) {
+                    publishPaused(model, partial, -1L)
+                    return
+                }
+
+                try {
+                    when (downloadFromUrl(model, url, partial, destination, control)) {
+                        DownloadAttemptResult.COMPLETED -> return
+                        DownloadAttemptResult.PAUSED -> return
+                    }
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    publishPaused(model, partial, -1L)
+                    return
+                } catch (error: Exception) {
+                    lastError = error
+                    if (index < model.downloadUrls.lastIndex) {
+                        _state.value = ModelDownloadState(
+                            modelId = model.id,
+                            phase = DownloadPhase.DOWNLOADING,
+                            downloadedBytes = sanitizePartial(partial, model),
+                            totalBytes = -1L,
+                        )
+                    }
+                }
+            }
+            _state.value = ModelDownloadState(
+                modelId = model.id,
+                phase = DownloadPhase.FAILED,
+                downloadedBytes = sanitizePartial(partial, model),
+                totalBytes = -1L,
+                error = userFacingError(lastError),
+            )
+        } finally {
+            currentControl.compareAndSet(control, null)
+        }
+    }
+
+    private fun downloadFromUrl(
+        model: ModelDefinition,
+        url: String,
+        partial: File,
+        destination: File,
+        control: DownloadControl,
+    ): DownloadAttemptResult {
+        var connection: HttpURLConnection? = null
+        try {
+            var existingBytes = sanitizePartial(partial, model)
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
                 readTimeout = 30_000
                 instanceFollowRedirects = true
                 requestMethod = "GET"
@@ -114,6 +205,10 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
             }
 
             val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                throw HttpStatusException(responseCode)
+            }
+
             val append = existingBytes > 0L && responseCode == HttpURLConnection.HTTP_PARTIAL
             if (!append) {
                 existingBytes = 0L
@@ -121,12 +216,16 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                     throw IOException("无法重置临时模型文件")
                 }
             }
-            if (responseCode !in 200..299) {
-                throw IOException("模型服务器返回 HTTP $responseCode")
-            }
 
             val contentLength = connection.contentLengthLong
-            val totalBytes = if (contentLength >= 0L) existingBytes + contentLength else -1L
+            val totalBytes = if (contentLength >= 0L && existingBytes <= model.maxDownloadBytes - contentLength) {
+                existingBytes + contentLength
+            } else {
+                -1L
+            }
+            if (totalBytes > model.maxDownloadBytes) {
+                throw IOException("模型文件大小异常：${formatBytes(totalBytes)}")
+            }
             _state.value = ModelDownloadState(
                 modelId = model.id,
                 phase = DownloadPhase.DOWNLOADING,
@@ -134,25 +233,27 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                 totalBytes = totalBytes,
             )
 
+            var downloaded = existingBytes
+            var paused = false
             connection.inputStream.use { input ->
                 FileOutputStream(partial, append).use { output ->
                     val buffer = ByteArray(64 * 1024)
-                    var downloaded = existingBytes
                     while (true) {
                         if (control.pauseRequested.get()) {
-                            _state.value = ModelDownloadState(
-                                modelId = model.id,
-                                phase = DownloadPhase.PAUSED,
-                                downloadedBytes = downloaded,
-                                totalBytes = totalBytes,
-                            )
-                            return
+                            paused = true
+                            break
                         }
                         val count = input.read(buffer)
                         if (count < 0) break
                         if (count == 0) continue
-                        output.write(buffer, 0, count)
                         downloaded += count
+                        if (downloaded > model.maxDownloadBytes) {
+                            throw IOException("模型文件大小超过限制：${formatBytes(model.maxDownloadBytes)}")
+                        }
+                        if (totalBytes > 0L && downloaded > totalBytes) {
+                            throw IOException("模型下载大小异常：$downloaded/$totalBytes")
+                        }
+                        output.write(buffer, 0, count)
                         _state.value = ModelDownloadState(
                             modelId = model.id,
                             phase = DownloadPhase.DOWNLOADING,
@@ -161,37 +262,66 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                         )
                     }
                     output.fd.sync()
-                    if (totalBytes > 0L && downloaded < totalBytes) {
-                        throw IOException("模型下载提前结束：$downloaded/$totalBytes")
-                    }
-                    if (destination.exists() && !destination.delete()) {
-                        throw IOException("无法替换旧模型文件")
-                    }
-                    if (!partial.renameTo(destination)) {
-                        throw IOException("无法完成模型文件安装")
-                    }
-                    _state.value = ModelDownloadState(
-                        modelId = model.id,
-                        phase = DownloadPhase.COMPLETED,
-                        downloadedBytes = downloaded,
-                        totalBytes = if (totalBytes > 0L) totalBytes else downloaded,
-                    )
                 }
             }
-        } catch (cancelled: InterruptedException) {
-            Thread.currentThread().interrupt()
-            _state.value = ModelDownloadState(model.id, DownloadPhase.PAUSED, partial.length(), -1L)
-        } catch (error: Exception) {
+
+            if (paused) {
+                _state.value = ModelDownloadState(
+                    modelId = model.id,
+                    phase = DownloadPhase.PAUSED,
+                    downloadedBytes = downloaded,
+                    totalBytes = totalBytes,
+                )
+                return DownloadAttemptResult.PAUSED
+            }
+            if (downloaded <= 0L) {
+                throw IOException("模型下载结果为空")
+            }
+            if (totalBytes > 0L && downloaded < totalBytes) {
+                throw IOException("模型下载提前结束：$downloaded/$totalBytes")
+            }
+            if (destination.exists() && !destination.delete()) {
+                throw IOException("无法替换旧模型文件")
+            }
+            if (!partial.renameTo(destination)) {
+                throw IOException("无法完成模型文件安装")
+            }
             _state.value = ModelDownloadState(
                 modelId = model.id,
-                phase = DownloadPhase.FAILED,
-                downloadedBytes = partial.length(),
-                totalBytes = _state.value.totalBytes,
-                error = error.message ?: "模型下载失败",
+                phase = DownloadPhase.COMPLETED,
+                downloadedBytes = downloaded,
+                totalBytes = if (totalBytes > 0L) totalBytes else downloaded,
             )
+            return DownloadAttemptResult.COMPLETED
         } finally {
             connection?.disconnect()
-            currentControl.compareAndSet(control, null)
+        }
+    }
+
+    private fun partialFile(model: ModelDefinition): File = File(modelFile(model).path + ".part")
+
+    private fun sanitizePartial(file: File, model: ModelDefinition): Long {
+        val length = file.length()
+        if (length <= model.maxDownloadBytes) return length
+        file.delete()
+        return file.length().takeIf { it <= model.maxDownloadBytes } ?: 0L
+    }
+
+    private fun publishPaused(model: ModelDefinition, partial: File, totalBytes: Long) {
+        _state.value = ModelDownloadState(
+            modelId = model.id,
+            phase = DownloadPhase.PAUSED,
+            downloadedBytes = sanitizePartial(partial, model),
+            totalBytes = totalBytes,
+        )
+    }
+
+    private fun userFacingError(error: Exception?): String {
+        val detail = error?.message?.takeIf { it.isNotBlank() } ?: "未知网络错误"
+        return when (error) {
+            is SocketTimeoutException, is ConnectException, is NoRouteToHostException,
+            is UnknownHostException -> "无法连接模型下载源，请切换网络后重试：$detail"
+            else -> "模型下载失败：$detail"
         }
     }
 
@@ -202,6 +332,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
 
     companion object {
         fun formatBytes(bytes: Long): String {
+            if (bytes <= 0L) return "0 B"
             if (bytes < 1024L) return "$bytes B"
             val units = arrayOf("KB", "MB", "GB")
             var value = bytes.toDouble()
@@ -210,7 +341,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                 value /= 1024.0
                 unit += 1
             }
-            return "%.1f %s".format(value, units[unit])
+            return String.format(Locale.ROOT, "%.1f %s", value, units[unit])
         }
     }
 }

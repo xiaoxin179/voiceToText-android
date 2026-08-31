@@ -192,6 +192,11 @@ private fun VoiceToTextScreen(
     val selectedModel = models.firstOrNull { it.id == selectedModelId } ?: models.first()
     val selectedInstalled = isInstalled(selectedModel)
     val selectedDownloading = downloadState.modelId == selectedModel.id && downloadState.phase == DownloadPhase.DOWNLOADING
+    val selectedDownloadInProgress = downloadState.modelId == selectedModel.id && downloadState.phase in setOf(
+        DownloadPhase.DOWNLOADING,
+        DownloadPhase.PAUSED,
+        DownloadPhase.FAILED,
+    )
 
     Scaffold(
         topBar = {
@@ -224,11 +229,7 @@ private fun VoiceToTextScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (downloadState.modelId == selectedModel.id && downloadState.phase in setOf(
-                            DownloadPhase.DOWNLOADING,
-                            DownloadPhase.PAUSED,
-                            DownloadPhase.FAILED,
-                        ) || selectedDownloading) {
+                    if (selectedDownloadInProgress) {
                         LinearProgressIndicator(
                             progress = { downloadState.progress },
                             modifier = Modifier.fillMaxWidth(),
@@ -396,7 +397,11 @@ private fun downloadProgressLabel(state: ModelDownloadState): String {
     val downloaded = ModelDownloadManager.formatBytes(state.downloadedBytes)
     val total = if (state.totalBytes > 0L) ModelDownloadManager.formatBytes(state.totalBytes) else "未知大小"
     val percent = if (state.totalBytes > 0L) " ${(state.progress * 100).toInt()}%" else ""
-    val phase = if (state.phase == DownloadPhase.PAUSED) "已暂停" else "下载中"
+    val phase = when (state.phase) {
+        DownloadPhase.PAUSED -> "已暂停"
+        DownloadPhase.FAILED -> "等待重试"
+        else -> "下载中"
+    }
     return "$phase：$downloaded / $total$percent"
 }
 
