@@ -1,6 +1,16 @@
 package com.xiaoxin.voicetotext.android.capture
 
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
+
+internal fun audioRms(input: FloatArray): Float {
+    if (input.isEmpty()) return 0f
+    var sumSquares = 0.0
+    for (sample in input) {
+        sumSquares += sample.toDouble() * sample.toDouble()
+    }
+    return sqrt(sumSquares / input.size.toDouble()).toFloat()
+}
 
 internal fun resampleLinear(input: FloatArray, inputRate: Int, targetRate: Int): FloatArray {
     if (inputRate == targetRate || input.isEmpty()) return input

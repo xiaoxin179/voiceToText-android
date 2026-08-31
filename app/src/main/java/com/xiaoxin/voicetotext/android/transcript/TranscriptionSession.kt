@@ -15,6 +15,9 @@ data class TranscriptionState(
     val modelName: String = "",
     val status: String = "未开始",
     val rawText: String = "",
+    val inputRms: Float = 0f,
+    val capturedSeconds: Int = 0,
+    val processedChunks: Int = 0,
     val transcriptPath: String? = null,
     val error: String? = null,
 )
@@ -41,6 +44,18 @@ object TranscriptionSession {
         _state.update { current ->
             val combined = if (current.rawText.isEmpty()) text else current.rawText + "\n" + text
             current.copy(rawText = combined)
+        }
+    }
+
+    fun audioProgress(rms: Float, capturedSeconds: Int) {
+        _state.update { current ->
+            current.copy(inputRms = rms, capturedSeconds = capturedSeconds)
+        }
+    }
+
+    fun chunkProcessed() {
+        _state.update { current ->
+            current.copy(processedChunks = current.processedChunks + 1)
         }
     }
 

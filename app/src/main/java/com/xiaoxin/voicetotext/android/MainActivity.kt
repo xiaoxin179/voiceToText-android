@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -141,7 +142,14 @@ class MainActivity : ComponentActivity() {
     private fun startCaptureAfterPermission(pending: PendingStart) {
         if (pending.source == AudioCaptureService.SOURCE_SYSTEM) {
             pendingStart = pending
-            projectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            val captureIntent = if (Build.VERSION.SDK_INT >= 34) {
+                mediaProjectionManager.createScreenCaptureIntent(
+                    MediaProjectionConfig.createConfigForDefaultDisplay(),
+                )
+            } else {
+                mediaProjectionManager.createScreenCaptureIntent()
+            }
+            projectionLauncher.launch(captureIntent)
         } else {
             startAudioService(pending)
         }
@@ -268,7 +276,7 @@ private fun VoiceToTextScreen(
                     }
                     Text(
                         if (source == AudioCaptureService.SOURCE_SYSTEM) {
-                            "采集手机正在播放的音频；开始时需要授权系统音频捕获。"
+                            "采集手机正在播放的音频；授权使用整个屏幕，但应用只读取音频。"
                         } else {
                             "采集手机麦克风输入；开始时需要授权麦克风。"
                         },
@@ -299,6 +307,12 @@ private fun VoiceToTextScreen(
                     if (transcriptionState.running) {
                         Text("来源：${sourceLabel(transcriptionState.source)}")
                         Text("模型：${transcriptionState.modelName}")
+                        Text(
+                            "输入：${inputLevelLabel(transcriptionState.inputRms)} · " +
+                                "采集 ${transcriptionState.capturedSeconds}s · " +
+                                "识别 ${transcriptionState.processedChunks} 段",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     transcriptionState.transcriptPath?.let {
                         Text("已保存：$it", style = MaterialTheme.typography.bodySmall)
@@ -391,6 +405,12 @@ private fun sourceLabel(source: String): String = when (source) {
     AudioCaptureService.SOURCE_MIC -> "麦克风"
     AudioCaptureService.SOURCE_SYSTEM -> "系统音频"
     else -> source
+}
+
+private fun inputLevelLabel(rms: Float): String = when {
+    rms >= 0.01f -> "有信号"
+    rms >= 0.001f -> "较弱"
+    else -> "无信号"
 }
 
 private fun downloadProgressLabel(state: ModelDownloadState): String {

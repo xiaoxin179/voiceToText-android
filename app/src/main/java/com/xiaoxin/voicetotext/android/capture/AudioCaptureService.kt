@@ -133,21 +133,52 @@ class AudioCaptureService : Service() {
                 for (chunk in channel) {
                     TranscriptionSession.status("本地识别中")
                     val rawText = engine.transcribe(chunk)
-                    TranscriptionSession.appendRaw(rawText)
-                    TranscriptionSession.status("正在监听")
+                    TranscriptionSession.chunkProcessed()
+                    if (rawText.isBlank()) {
+                        TranscriptionSession.status("收到音频，但当前片段未识别出文字")
+                    } else {
+                        TranscriptionSession.appendRaw(rawText)
+                        TranscriptionSession.status("正在监听")
+                    }
                 }
             }
         }
 
         val reader = launch(Dispatchers.IO) {
             val buffer = ShortArray(maxOf(record.sampleRate / 10, 1024))
+            var capturedSamples = 0L
+            var lastReportedSecond = 0
+            var reportRms = 0f
+            var signalDetected = false
             record.startRecording()
             while (isActive) {
                 val count = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                 if (count <= 0) continue
                 val samples = FloatArray(count) { index -> buffer[index] / 32768.0f }
+                val rms = audioRms(samples)
+                capturedSamples += count
+                reportRms = maxOf(reportRms, rms)
+                val capturedSeconds = (capturedSamples / record.sampleRate).toInt()
+                if (capturedSeconds > lastReportedSecond) {
+                    TranscriptionSession.audioProgress(reportRms, capturedSeconds)
+                    reportRms = 0f
+                    lastReportedSecond = capturedSeconds
+                }
+                if (!signalDetected && rms >= MIN_AUDIO_RMS) {
+                    signalDetected = true
+                    TranscriptionSession.status("已检测到音频，正在监听")
+                } else if (!signalDetected && capturedSeconds >= NO_SIGNAL_WARNING_SECONDS) {
+                    val message = if (source == SOURCE_SYSTEM) {
+                        "未检测到系统音频；请确认授权整个屏幕，或当前应用允许音频捕获"
+                    } else {
+                        "未检测到麦克风声音"
+                    }
+                    TranscriptionSession.status(message)
+                }
                 for (chunk in chunker.append(samples)) {
-                    channel.send(chunk)
+                    if (audioRms(chunk) >= MIN_AUDIO_RMS) {
+                        channel.send(chunk)
+                    }
                 }
             }
         }
@@ -157,7 +188,9 @@ class AudioCaptureService : Service() {
         } finally {
             reader.cancel()
             runCatching { record.stop() }
-            chunker.flush()?.let { channel.trySend(it) }
+            chunker.flush()
+                ?.takeIf { audioRms(it) >= MIN_AUDIO_RMS }
+                ?.let { channel.trySend(it) }
             channel.close()
             recognizer.join()
             TranscriptionSession.stopped(outputRoot)
@@ -262,6 +295,8 @@ class AudioCaptureService : Service() {
         private const val CHANNEL_ID = "transcription"
         private const val NOTIFICATION_ID = 1001
         private const val TAG = "AudioCaptureService"
+        private const val MIN_AUDIO_RMS = 0.001f
+        private const val NO_SIGNAL_WARNING_SECONDS = 3
 
         fun start(
             context: Context,
