@@ -25,6 +25,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.xiaoxin.voicetotext.android.R
 import com.xiaoxin.voicetotext.android.asr.LocalWhisperEngine
+import com.xiaoxin.voicetotext.android.debug.DebugLogger
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
 import java.io.File
@@ -53,10 +54,13 @@ class AudioCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugLogger.initialize(applicationContext)
+        DebugLogger.log("SERVICE", "AudioCaptureService 创建")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        DebugLogger.log("SERVICE", "收到命令 action=${intent?.action} startId=$startId")
         when (intent?.action) {
             ACTION_START -> startCapture(intent)
             ACTION_STOP -> stopCapture()
@@ -69,12 +73,15 @@ class AudioCaptureService : Service() {
         stopRequested.set(false)
         val source = intent.getStringExtra(EXTRA_SOURCE) ?: SOURCE_SYSTEM
         val modelPath = intent.getStringExtra(EXTRA_MODEL_PATH)
+        DebugLogger.log("CAPTURE", "准备监听 source=$source model=${modelPath?.let { File(it).name }}")
         if (modelPath.isNullOrBlank()) {
+            DebugLogger.log("ERROR", "没有选择可用的本地模型")
             TranscriptionSession.failed("没有选择可用的本地模型")
             stopSelf()
             return
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            DebugLogger.log("ERROR", "服务启动时缺少录音权限")
             TranscriptionSession.failed("没有获得录音权限")
             stopSelf()
             return
@@ -89,7 +96,9 @@ class AudioCaptureService : Service() {
         }
         try {
             startForeground(NOTIFICATION_ID, notification(), foregroundType)
+            DebugLogger.log("SERVICE", "前台服务启动 foregroundType=$foregroundType")
         } catch (error: Exception) {
+            DebugLogger.log("ERROR", "无法启动前台监听服务", error)
             TranscriptionSession.failed("无法启动前台监听服务：${error.message}")
             stopSelf()
             return
@@ -104,8 +113,10 @@ class AudioCaptureService : Service() {
                 throw cancelled
             } catch (error: Exception) {
                 Log.e(TAG, "audio capture failed", error)
+                DebugLogger.log("ERROR", "音频监听异常", error)
                 TranscriptionSession.failed(error.message ?: "音频监听失败")
             } finally {
+                DebugLogger.log("SERVICE", "释放音频采集资源")
                 audioRecord?.release()
                 audioRecord = null
                 mediaProjection?.stop()
@@ -125,11 +136,18 @@ class AudioCaptureService : Service() {
         val projection = if (source == SOURCE_SYSTEM) {
             requireNotNull(projectionData) { "没有获得系统音频采集授权" }
             val manager = getSystemService(MediaProjectionManager::class.java)
-            manager.getMediaProjection(projectionResult, projectionData).also { mediaProjection = it }
+            manager.getMediaProjection(projectionResult, projectionData).also {
+                mediaProjection = it
+                DebugLogger.log("CAPTURE", "MediaProjection 已建立")
+            }
         } else {
             null
         }
         val record = buildAudioRecord(source, projection)
+        DebugLogger.log(
+            "AUDIO",
+            "AudioRecord 已初始化 source=$source sampleRate=${record.sampleRate} channelCount=${record.channelCount}",
+        )
         audioRecord = record
         val queueDirectory = File(cacheDir, "transcription-queue").apply {
             deleteRecursively()
@@ -140,12 +158,18 @@ class AudioCaptureService : Service() {
         val outputRoot = filesDir
         val modelName = ModelCatalog.all.firstOrNull { it.fileName == File(modelPath).name }?.displayName ?: File(modelPath).name
         TranscriptionSession.started(source, modelName)
+        DebugLogger.log("CAPTURE", "监听会话开始 source=$source model=$modelName")
 
         val recognizer = launch(recognitionDispatcher) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             LocalWhisperEngine().use { engine ->
+                val loadStartedAt = SystemClock.elapsedRealtime()
                 engine.open(modelPath)
                 TranscriptionSession.backend(engine.backend)
+                DebugLogger.log(
+                    "ASR",
+                    "模型加载完成 model=$modelName backend=${engine.backend} elapsedMs=${SystemClock.elapsedRealtime() - loadStartedAt}",
+                )
                 for (chunkFile in channel) {
                     TranscriptionSession.status("本地识别中")
                     val startedAt = SystemClock.elapsedRealtime()
@@ -154,7 +178,12 @@ class AudioCaptureService : Service() {
                     } finally {
                         chunkFile.delete()
                     }
-                    TranscriptionSession.chunkProcessed(SystemClock.elapsedRealtime() - startedAt)
+                    val inferenceMillis = SystemClock.elapsedRealtime() - startedAt
+                    TranscriptionSession.chunkProcessed(inferenceMillis)
+                    DebugLogger.log(
+                        "ASR",
+                        "片段识别完成 file=${chunkFile.name} elapsedMs=$inferenceMillis chars=${rawText.length} blank=${rawText.isBlank()}",
+                    )
                     if (rawText.isBlank()) {
                         TranscriptionSession.status("收到音频，但当前片段未识别出文字")
                     } else {
@@ -173,11 +202,19 @@ class AudioCaptureService : Service() {
             var lastReportedSecond = 0
             var reportRms = 0f
             var signalDetected = false
+            var noSignalWarningLogged = false
+            var readFailureLogged = false
             var chunkIndex = 0L
             record.startRecording()
             while (isActive && !stopRequested.get()) {
                 val count = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
-                if (count <= 0) continue
+                if (count <= 0) {
+                    if (!readFailureLogged) {
+                        DebugLogger.log("AUDIO", "AudioRecord 读取失败 code=$count")
+                        readFailureLogged = true
+                    }
+                    continue
+                }
                 val samples = FloatArray(count) { index -> buffer[index] / 32768.0f }
                 val rms = audioRms(samples)
                 capturedSamples += count
@@ -185,17 +222,28 @@ class AudioCaptureService : Service() {
                 val capturedSeconds = (capturedSamples / record.sampleRate).toInt()
                 if (capturedSeconds > lastReportedSecond) {
                     TranscriptionSession.audioProgress(reportRms, capturedSeconds)
+                    if (capturedSeconds % DEBUG_AUDIO_INTERVAL_SECONDS == 0) {
+                        DebugLogger.log(
+                            "AUDIO",
+                            "采集进度 seconds=$capturedSeconds rms=$reportRms queued=${TranscriptionSession.state.value.queuedChunks}",
+                        )
+                    }
                     reportRms = 0f
                     lastReportedSecond = capturedSeconds
                 }
                 if (!signalDetected && rms >= MIN_AUDIO_RMS) {
                     signalDetected = true
+                    DebugLogger.log("AUDIO", "首次检测到有效信号 seconds=$capturedSeconds rms=$rms")
                     TranscriptionSession.status("已检测到音频，正在监听")
                 } else if (!signalDetected && capturedSeconds >= NO_SIGNAL_WARNING_SECONDS) {
                     val message = if (source == SOURCE_SYSTEM) {
                         "未检测到系统音频；请确认授权整个屏幕，或当前应用允许音频捕获"
                     } else {
                         "未检测到麦克风声音"
+                    }
+                    if (!noSignalWarningLogged) {
+                        DebugLogger.log("AUDIO", "$message seconds=$capturedSeconds rms=$rms")
+                        noSignalWarningLogged = true
                     }
                     TranscriptionSession.status(message)
                 }
@@ -204,6 +252,10 @@ class AudioCaptureService : Service() {
                         val chunkFile = File(queueDirectory, "%08d.pcm".format(chunkIndex++))
                         writePcm16(chunkFile, chunk)
                         TranscriptionSession.chunkQueued()
+                        DebugLogger.log(
+                            "AUDIO",
+                            "片段入队 index=$chunkIndex samples=${chunk.size} rms=${audioRms(chunk)}",
+                        )
                         channel.send(chunkFile)
                     }
                 }
@@ -221,6 +273,7 @@ class AudioCaptureService : Service() {
                     val chunkFile = File(queueDirectory, "%08d.pcm".format(Long.MAX_VALUE))
                     writePcm16(chunkFile, chunk)
                     TranscriptionSession.chunkQueued()
+                    DebugLogger.log("AUDIO", "尾部片段入队 samples=${chunk.size} rms=${audioRms(chunk)}")
                     if (channel.trySend(chunkFile).isFailure) chunkFile.delete()
                 }
             channel.close()
@@ -230,6 +283,10 @@ class AudioCaptureService : Service() {
             recognizer.join()
             queueDirectory.deleteRecursively()
             TranscriptionSession.stopped(outputRoot)
+            DebugLogger.log(
+                "CAPTURE",
+                "监听会话结束 seconds=${TranscriptionSession.state.value.capturedSeconds} chunks=${TranscriptionSession.state.value.processedChunks}",
+            )
         }
     }
 
@@ -273,13 +330,18 @@ class AudioCaptureService : Service() {
                 Log.w(TAG, "cannot open audio record at $sampleRate", error)
                 continue
             }
-            if (record.state == AudioRecord.STATE_INITIALIZED) return record
+            if (record.state == AudioRecord.STATE_INITIALIZED) {
+                DebugLogger.log("AUDIO", "采集设备可用 sampleRate=$sampleRate source=$source")
+                return record
+            }
+            DebugLogger.log("AUDIO", "采集设备初始化失败 sampleRate=$sampleRate source=$source")
             record.release()
         }
         throw IllegalStateException("无法打开${if (source == SOURCE_SYSTEM) "系统播放音频" else "麦克风"}采集设备")
     }
 
     private fun stopCapture(stopService: Boolean = true) {
+        DebugLogger.log("CAPTURE", "停止请求 stopService=$stopService active=${captureJob != null}")
         stopRequested.set(true)
         audioRecord?.let { runCatching { it.stop() } }
         if (stopService) {
@@ -319,6 +381,7 @@ class AudioCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        DebugLogger.log("SERVICE", "AudioCaptureService 销毁")
         stopCapture(stopService = false)
         serviceScope.coroutineContext.cancel()
         recognitionDispatcher.close()
@@ -342,6 +405,7 @@ class AudioCaptureService : Service() {
         private const val TAG = "AudioCaptureService"
         private const val MIN_AUDIO_RMS = 0.001f
         private const val NO_SIGNAL_WARNING_SECONDS = 3
+        private const val DEBUG_AUDIO_INTERVAL_SECONDS = 5
 
         fun start(
             context: Context,

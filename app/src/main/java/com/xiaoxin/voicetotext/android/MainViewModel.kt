@@ -2,6 +2,8 @@ package com.xiaoxin.voicetotext.android
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.xiaoxin.voicetotext.android.debug.DebugLogState
+import com.xiaoxin.voicetotext.android.debug.DebugLogger
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.model.ModelDefinition
 import com.xiaoxin.voicetotext.android.model.ModelDownloadManager
@@ -18,9 +20,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.getString(SELECTED_MODEL_KEY, "base") ?: "base",
     )
 
+    init {
+        DebugLogger.initialize(application)
+    }
+
     val selectedModelId: StateFlow<String> = _selectedModelId
     val downloadState: StateFlow<ModelDownloadState> = modelManager.state
     val transcriptionState: StateFlow<TranscriptionState> = TranscriptionSession.state
+    val debugLogState: StateFlow<DebugLogState> = DebugLogger.state
     val models: List<ModelDefinition> = ModelCatalog.all
     val modelDirectory: String
         get() = modelManager.modelDirectory.absolutePath
@@ -29,6 +36,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (ModelCatalog.all.none { it.id == modelId }) return
         _selectedModelId.value = modelId
         preferences.edit().putString(SELECTED_MODEL_KEY, modelId).apply()
+        DebugLogger.log("MODEL", "选择模型 id=$modelId")
     }
 
     fun selectedModel(): ModelDefinition = ModelCatalog.find(_selectedModelId.value)
@@ -45,15 +53,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun downloadModel(modelId: String) {
         val model = ModelCatalog.all.firstOrNull { it.id == modelId } ?: return
+        DebugLogger.log("MODEL", "请求下载模型 id=$modelId")
         modelManager.startOrResume(model)
     }
 
     fun pauseDownload() {
+        DebugLogger.log("MODEL", "请求暂停模型下载")
         modelManager.pause()
     }
 
     fun clearTranscript() {
+        DebugLogger.log("UI", "清空文字稿")
         TranscriptionSession.clear()
+    }
+
+    fun setDebugLogging(enabled: Boolean) {
+        DebugLogger.setEnabled(enabled)
+    }
+
+    fun clearDebugLog() {
+        DebugLogger.clear()
+    }
+
+    fun logUiEvent(message: String) {
+        DebugLogger.log("UI", message)
     }
 
     override fun onCleared() {

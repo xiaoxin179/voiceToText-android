@@ -23,6 +23,10 @@ DeepSeek, or any cloud transcription service.
 - Show live input-signal, captured-time, and processed-chunk diagnostics.
 - Separate listening and local-model management into a two-tab bottom navigation.
 - Spool captured chunks to a disk-backed queue so slow on-device inference does not interrupt audio capture.
+- Enable persistent diagnostic logging from the profile tab, with a live event
+  view plus copy, share, and clear actions. Logs cover UI operations,
+  permissions, audio diagnostics, model downloads, inference timing, and the
+  selected compute backend without storing transcript content.
 
 The first implementation targets Android 10 or newer. The debug build includes
 `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` native libraries; arm64 is the
@@ -42,6 +46,7 @@ app/src/main/java/.../model       model catalog and resumable downloads
 app/src/main/java/.../capture     AudioRecord and foreground capture service
 app/src/main/java/.../asr         local Whisper JNI adapter
 app/src/main/java/.../transcript  raw transcript state and file output
+app/src/main/java/.../debug       opt-in diagnostic logging and log history
 app/src/main/cpp                  JNI bridge and whisper.cpp build integration
 ```
 

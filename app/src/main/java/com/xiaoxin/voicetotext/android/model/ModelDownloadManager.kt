@@ -1,6 +1,7 @@
 package com.xiaoxin.voicetotext.android.model
 
 import android.content.Context
+import com.xiaoxin.voicetotext.android.debug.DebugLogger
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -80,6 +81,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
             destination.delete()
         }
         if (isInstalled(model)) {
+            DebugLogger.log("DOWNLOAD", "模型已安装，跳过下载 id=${model.id} bytes=${destination.length()}")
             _state.value = ModelDownloadState(
                 modelId = model.id,
                 phase = DownloadPhase.COMPLETED,
@@ -99,6 +101,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
         val partial = partialFile(model)
         val previousState = _state.value
         val downloadedBytes = sanitizePartial(partial, model)
+        DebugLogger.log("DOWNLOAD", "开始或继续下载 id=${model.id} resumedBytes=$downloadedBytes")
         _state.value = ModelDownloadState(
             modelId = model.id,
             phase = DownloadPhase.DOWNLOADING,
@@ -108,6 +111,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
         try {
             executor.submit { download(model, control) }
         } catch (error: RuntimeException) {
+            DebugLogger.log("ERROR", "无法提交模型下载任务 id=${model.id}", error)
             currentControl.compareAndSet(control, null)
             _state.value = ModelDownloadState(
                 modelId = model.id,
@@ -120,6 +124,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
     }
 
     fun pause() {
+        DebugLogger.log("DOWNLOAD", "暂停下载")
         currentControl.get()?.pauseRequested?.set(true)
     }
 
@@ -151,6 +156,10 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                 }
 
                 try {
+                    DebugLogger.log(
+                        "DOWNLOAD",
+                        "连接下载源 id=${model.id} source=${index + 1}/${model.downloadUrls.size} host=${URL(url).host}",
+                    )
                     when (downloadFromUrl(model, url, partial, destination, control)) {
                         DownloadAttemptResult.COMPLETED -> return
                         DownloadAttemptResult.PAUSED -> return
@@ -160,6 +169,11 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                     publishPaused(model, partial, -1L)
                     return
                 } catch (error: Exception) {
+                    DebugLogger.log(
+                        "ERROR",
+                        "下载源失败 id=${model.id} source=${index + 1}/${model.downloadUrls.size}",
+                        error,
+                    )
                     lastError = error
                     if (index < model.downloadUrls.lastIndex) {
                         _state.value = ModelDownloadState(
@@ -178,6 +192,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                 totalBytes = -1L,
                 error = userFacingError(lastError),
             )
+            DebugLogger.log("ERROR", "所有模型下载源均失败 id=${model.id}", lastError)
         } finally {
             currentControl.compareAndSet(control, null)
         }
@@ -205,6 +220,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
             }
 
             val responseCode = connection.responseCode
+            DebugLogger.log("DOWNLOAD", "服务器响应 id=${model.id} code=$responseCode resumedBytes=$existingBytes")
             if (responseCode !in 200..299) {
                 throw HttpStatusException(responseCode)
             }
@@ -272,6 +288,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                     downloadedBytes = downloaded,
                     totalBytes = totalBytes,
                 )
+                DebugLogger.log("DOWNLOAD", "模型下载已暂停 id=${model.id} bytes=$downloaded")
                 return DownloadAttemptResult.PAUSED
             }
             if (downloaded <= 0L) {
@@ -292,6 +309,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
                 downloadedBytes = downloaded,
                 totalBytes = if (totalBytes > 0L) totalBytes else downloaded,
             )
+            DebugLogger.log("DOWNLOAD", "模型下载完成 id=${model.id} bytes=$downloaded")
             return DownloadAttemptResult.COMPLETED
         } finally {
             connection?.disconnect()
@@ -314,6 +332,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
             downloadedBytes = sanitizePartial(partial, model),
             totalBytes = totalBytes,
         )
+        DebugLogger.log("DOWNLOAD", "模型下载已暂停 id=${model.id} bytes=${partial.length()}")
     }
 
     private fun userFacingError(error: Exception?): String {

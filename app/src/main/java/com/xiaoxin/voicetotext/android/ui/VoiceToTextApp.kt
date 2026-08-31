@@ -21,6 +21,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -44,6 +47,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -62,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaoxin.voicetotext.android.capture.AudioCaptureService
 import com.xiaoxin.voicetotext.android.BuildConfig
+import com.xiaoxin.voicetotext.android.debug.DebugLogState
 import com.xiaoxin.voicetotext.android.model.DownloadPhase
 import com.xiaoxin.voicetotext.android.model.ModelDefinition
 import com.xiaoxin.voicetotext.android.model.ModelDownloadManager
@@ -89,6 +94,7 @@ fun VoiceToTextApp(
     selectedModelId: String,
     downloadState: ModelDownloadState,
     transcriptionState: TranscriptionState,
+    debugLogState: DebugLogState,
     modelDirectory: String,
     isInstalled: (ModelDefinition) -> Boolean,
     modelSizeBytes: (ModelDefinition) -> Long,
@@ -98,6 +104,11 @@ fun VoiceToTextApp(
     onStart: (String) -> Unit,
     onStop: () -> Unit,
     onClear: () -> Unit,
+    onDebugLoggingChanged: (Boolean) -> Unit,
+    onClearDebugLog: () -> Unit,
+    onCopyDebugLog: () -> Unit,
+    onShareDebugLog: () -> Unit,
+    onUiEvent: (String) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.LISTEN) }
     var source by rememberSaveable { mutableStateOf(AudioCaptureService.SOURCE_SYSTEM) }
@@ -106,7 +117,10 @@ fun VoiceToTextApp(
     Scaffold(
         containerColor = Paper,
         bottomBar = {
-            BottomNavigation(selectedTab) { selectedTab = it }
+            BottomNavigation(selectedTab) { tab ->
+                onUiEvent("切换页面 tab=${tab.name}")
+                selectedTab = tab
+            }
         },
     ) { contentPadding ->
         when (selectedTab) {
@@ -116,8 +130,14 @@ fun VoiceToTextApp(
                 modelInstalled = isInstalled(selectedModel),
                 source = source,
                 transcriptionState = transcriptionState,
-                onSourceChanged = { source = it },
-                onManageModels = { selectedTab = AppTab.PROFILE },
+                onSourceChanged = { selectedSource ->
+                    onUiEvent("选择监听来源 source=$selectedSource")
+                    source = selectedSource
+                },
+                onManageModels = {
+                    onUiEvent("打开模型管理")
+                    selectedTab = AppTab.PROFILE
+                },
                 onStart = onStart,
                 onStop = onStop,
                 onClear = onClear,
@@ -128,12 +148,17 @@ fun VoiceToTextApp(
                 models = models,
                 selectedModelId = selectedModel.id,
                 downloadState = downloadState,
+                debugLogState = debugLogState,
                 modelDirectory = modelDirectory,
                 isInstalled = isInstalled,
                 modelSizeBytes = modelSizeBytes,
                 onModelSelected = onModelSelected,
                 onDownloadModel = onDownloadModel,
                 onPauseDownload = onPauseDownload,
+                onDebugLoggingChanged = onDebugLoggingChanged,
+                onClearDebugLog = onClearDebugLog,
+                onCopyDebugLog = onCopyDebugLog,
+                onShareDebugLog = onShareDebugLog,
             )
         }
     }
@@ -451,12 +476,17 @@ private fun ModelsPage(
     models: List<ModelDefinition>,
     selectedModelId: String,
     downloadState: ModelDownloadState,
+    debugLogState: DebugLogState,
     modelDirectory: String,
     isInstalled: (ModelDefinition) -> Boolean,
     modelSizeBytes: (ModelDefinition) -> Long,
     onModelSelected: (String) -> Unit,
     onDownloadModel: (String) -> Unit,
     onPauseDownload: () -> Unit,
+    onDebugLoggingChanged: (Boolean) -> Unit,
+    onClearDebugLog: () -> Unit,
+    onCopyDebugLog: () -> Unit,
+    onShareDebugLog: () -> Unit,
 ) {
     val installedCount = models.count(isInstalled)
     val selectedModel = models.first { it.id == selectedModelId }
@@ -510,12 +540,124 @@ private fun ModelsPage(
             Eyebrow("模型目录")
             Text(modelDirectory, color = Muted, style = MaterialTheme.typography.bodySmall)
         }
+
+        HorizontalDivider(color = Hairline)
+        DebugLogPanel(
+            state = debugLogState,
+            onEnabledChanged = onDebugLoggingChanged,
+            onClear = onClearDebugLog,
+            onCopy = onCopyDebugLog,
+            onShare = onShareDebugLog,
+        )
         Text(
             "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
             color = Muted,
             style = MaterialTheme.typography.bodySmall,
         )
         Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun DebugLogPanel(
+    state: DebugLogState,
+    onEnabledChanged: (Boolean) -> Unit,
+    onClear: () -> Unit,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.BugReport, contentDescription = null, tint = SwissBlue)
+                Column {
+                    Text("调试日志", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    Text(
+                        if (state.enabled) "正在记录 · ${state.eventCount} 条" else "已关闭",
+                        color = if (state.enabled) SwissBlue else Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            Switch(checked = state.enabled, onCheckedChange = onEnabledChanged)
+        }
+
+        Text(
+            "记录操作、采集、模型与识别诊断信息，不记录文字稿正文。",
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        state.error?.let { error ->
+            Text(error, color = ErrorRed, style = MaterialTheme.typography.bodySmall)
+        }
+
+        if (state.filePath != null) {
+            Surface(
+                color = White,
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Hairline, RoundedCornerShape(6.dp)),
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = state.recentEntries.takeLast(12).joinToString("\n").ifEmpty { "等待日志事件" },
+                        modifier = Modifier.padding(12.dp),
+                        color = Ink,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+
+            state.lastEventAt?.let { timestamp ->
+                Text("最近记录：$timestamp", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(state.filePath, color = Muted, style = MaterialTheme.typography.bodySmall)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    enabled = state.eventCount > 0,
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("复制")
+                }
+                OutlinedButton(
+                    onClick = onShare,
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("分享")
+                }
+                OutlinedButton(
+                    onClick = onClear,
+                    enabled = state.eventCount > 0,
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("清空")
+                }
+            }
+        }
     }
 }
 
