@@ -13,8 +13,8 @@ android {
         applicationId = "com.xiaoxin.voicetotext.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.1"
+        versionCode = 7
+        versionName = "0.2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -27,7 +27,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

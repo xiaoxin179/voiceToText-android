@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaoxin.voicetotext.android.capture.AudioCaptureService
+import com.xiaoxin.voicetotext.android.BuildConfig
 import com.xiaoxin.voicetotext.android.model.DownloadPhase
 import com.xiaoxin.voicetotext.android.model.ModelDefinition
 import com.xiaoxin.voicetotext.android.model.ModelDownloadManager
@@ -489,6 +490,11 @@ private fun ModelsPage(
             Eyebrow("模型目录")
             Text(modelDirectory, color = Muted, style = MaterialTheme.typography.bodySmall)
         }
+        Text(
+            "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
         Spacer(Modifier.height(20.dp))
     }
 }
