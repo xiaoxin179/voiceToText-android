@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
         mediaProjectionManager = getSystemService(MediaProjectionManager::class.java)
         setContent {
             val selectedModelId = viewModel.selectedModelId.collectAsStateWithLifecycle().value
+            val computeMode = viewModel.computeMode.collectAsStateWithLifecycle().value
             val downloadState = viewModel.downloadState.collectAsStateWithLifecycle().value
             val transcriptionState = viewModel.transcriptionState.collectAsStateWithLifecycle().value
             val debugLogState = viewModel.debugLogState.collectAsStateWithLifecycle().value
@@ -77,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 VoiceToTextApp(
                     models = viewModel.models,
                     selectedModelId = selectedModelId,
+                    computeMode = computeMode,
                     downloadState = downloadState,
                     transcriptionState = transcriptionState,
                     debugLogState = debugLogState,
@@ -84,6 +86,7 @@ class MainActivity : ComponentActivity() {
                     isInstalled = viewModel::isInstalled,
                     modelSizeBytes = viewModel::modelSizeBytes,
                     onModelSelected = viewModel::selectModel,
+                    onComputeModeSelected = viewModel::selectComputeMode,
                     onDownloadModel = viewModel::downloadModel,
                     onPauseDownload = viewModel::pauseDownload,
                     onStart = ::requestStart,
@@ -122,7 +125,7 @@ class MainActivity : ComponentActivity() {
             toast("请先安装并选择一个本地模型")
             return
         }
-        val pending = PendingStart(source, modelPath)
+        val pending = PendingStart(source, modelPath, viewModel.computeMode.value)
         if (
             ContextCompat.checkSelfPermission(
                 this,
@@ -163,11 +166,12 @@ class MainActivity : ComponentActivity() {
         projectionResult: Int = 0,
         projectionData: Intent? = null,
     ) {
-        DebugLogger.log("CAPTURE", "启动音频服务 source=${pending.source}")
+        DebugLogger.log("CAPTURE", "启动音频服务 source=${pending.source} computeMode=${pending.computeMode.id}")
         AudioCaptureService.start(
             context = this,
             source = pending.source,
             modelPath = pending.modelPath,
+            computeMode = pending.computeMode,
             projectionResult = projectionResult,
             projectionData = projectionData,
         )
@@ -212,5 +216,9 @@ class MainActivity : ComponentActivity() {
         startActivity(Intent.createChooser(intent, "分享调试日志"))
     }
 
-    private data class PendingStart(val source: String, val modelPath: String)
+    private data class PendingStart(
+        val source: String,
+        val modelPath: String,
+        val computeMode: com.xiaoxin.voicetotext.android.asr.ComputeMode,
+    )
 }

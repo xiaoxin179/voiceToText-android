@@ -25,9 +25,11 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
@@ -65,6 +67,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiaoxin.voicetotext.android.capture.AudioCaptureService
+import com.xiaoxin.voicetotext.android.asr.ComputeMode
 import com.xiaoxin.voicetotext.android.BuildConfig
 import com.xiaoxin.voicetotext.android.debug.DebugLogState
 import com.xiaoxin.voicetotext.android.model.DownloadPhase
@@ -92,6 +95,7 @@ private enum class AppTab(val label: String, val icon: ImageVector) {
 fun VoiceToTextApp(
     models: List<ModelDefinition>,
     selectedModelId: String,
+    computeMode: ComputeMode,
     downloadState: ModelDownloadState,
     transcriptionState: TranscriptionState,
     debugLogState: DebugLogState,
@@ -99,6 +103,7 @@ fun VoiceToTextApp(
     isInstalled: (ModelDefinition) -> Boolean,
     modelSizeBytes: (ModelDefinition) -> Long,
     onModelSelected: (String) -> Unit,
+    onComputeModeSelected: (ComputeMode) -> Unit,
     onDownloadModel: (String) -> Unit,
     onPauseDownload: () -> Unit,
     onStart: (String) -> Unit,
@@ -127,6 +132,7 @@ fun VoiceToTextApp(
             AppTab.LISTEN -> ListenPage(
                 modifier = Modifier.padding(contentPadding),
                 selectedModel = selectedModel,
+                computeMode = computeMode,
                 modelInstalled = isInstalled(selectedModel),
                 source = source,
                 transcriptionState = transcriptionState,
@@ -149,10 +155,13 @@ fun VoiceToTextApp(
                 selectedModelId = selectedModel.id,
                 downloadState = downloadState,
                 debugLogState = debugLogState,
+                computeMode = computeMode,
+                computeModeSelectionEnabled = !transcriptionState.running,
                 modelDirectory = modelDirectory,
                 isInstalled = isInstalled,
                 modelSizeBytes = modelSizeBytes,
                 onModelSelected = onModelSelected,
+                onComputeModeSelected = onComputeModeSelected,
                 onDownloadModel = onDownloadModel,
                 onPauseDownload = onPauseDownload,
                 onDebugLoggingChanged = onDebugLoggingChanged,
@@ -197,6 +206,7 @@ private fun BottomNavigation(selected: AppTab, onSelected: (AppTab) -> Unit) {
 private fun ListenPage(
     modifier: Modifier,
     selectedModel: ModelDefinition,
+    computeMode: ComputeMode,
     modelInstalled: Boolean,
     source: String,
     transcriptionState: TranscriptionState,
@@ -253,7 +263,7 @@ private fun ListenPage(
             ) { onSourceChanged(AudioCaptureService.SOURCE_MIC) }
         }
 
-        RuntimePanel(transcriptionState, source, selectedModel.displayName)
+        RuntimePanel(transcriptionState, source, selectedModel.displayName, computeMode)
 
         if (!modelInstalled) {
             Surface(
@@ -353,6 +363,7 @@ private fun RuntimePanel(
     state: TranscriptionState,
     selectedSource: String,
     selectedModelName: String,
+    computeMode: ComputeMode,
 ) {
     Surface(
         color = Ink,
@@ -415,7 +426,7 @@ private fun RuntimePanel(
             Text(
                 "${sourceLabel(if (state.running) state.source else selectedSource)} · " +
                     (if (state.running) state.modelName else selectedModelName) + " · " +
-                    (if (state.running) state.backend else "GPU 优先"),
+                    (if (state.running) state.backend else computeMode.displayName),
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFB8B8BE),
                 maxLines = 1,
@@ -477,10 +488,13 @@ private fun ModelsPage(
     selectedModelId: String,
     downloadState: ModelDownloadState,
     debugLogState: DebugLogState,
+    computeMode: ComputeMode,
+    computeModeSelectionEnabled: Boolean,
     modelDirectory: String,
     isInstalled: (ModelDefinition) -> Boolean,
     modelSizeBytes: (ModelDefinition) -> Long,
     onModelSelected: (String) -> Unit,
+    onComputeModeSelected: (ComputeMode) -> Unit,
     onDownloadModel: (String) -> Unit,
     onPauseDownload: () -> Unit,
     onDebugLoggingChanged: (Boolean) -> Unit,
@@ -522,6 +536,14 @@ private fun ModelsPage(
         }
         HorizontalDivider(color = Hairline)
 
+        ComputeModeSelector(
+            selected = computeMode,
+            enabled = computeModeSelectionEnabled,
+            onSelected = onComputeModeSelected,
+        )
+
+        HorizontalDivider(color = Hairline)
+
         models.forEachIndexed { index, model ->
             ModelRow(
                 index = index + 1,
@@ -555,6 +577,88 @@ private fun ModelsPage(
             style = MaterialTheme.typography.bodySmall,
         )
         Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun ComputeModeSelector(
+    selected: ComputeMode,
+    enabled: Boolean,
+    onSelected: (ComputeMode) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Column {
+                Eyebrow("计算后端")
+                Text("${selected.displayName}", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            }
+            if (!enabled) {
+                Text("监听中不可切换", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Hairline, RoundedCornerShape(6.dp)),
+        ) {
+            BackendButton(
+                modifier = Modifier.weight(1f),
+                selected = selected == ComputeMode.GPU,
+                enabled = enabled,
+                label = "GPU",
+                icon = Icons.Default.DeveloperBoard,
+                onClick = { onSelected(ComputeMode.GPU) },
+            )
+            BackendButton(
+                modifier = Modifier.weight(1f),
+                selected = selected == ComputeMode.CPU,
+                enabled = enabled,
+                label = "CPU",
+                icon = Icons.Default.Memory,
+                onClick = { onSelected(ComputeMode.CPU) },
+            )
+        }
+        Text(
+            if (selected == ComputeMode.GPU) "Vulkan 兼容配置" else "CPU 多线程推理",
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun BackendButton(
+    modifier: Modifier,
+    selected: Boolean,
+    enabled: Boolean,
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = modifier
+            .background(if (selected) SwissBlue else White)
+            .clickable(enabled = enabled, onClick = onClick)
+            .height(48.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = if (selected) White else if (enabled) Ink else Muted,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            label,
+            color = if (selected) White else if (enabled) Ink else Muted,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 

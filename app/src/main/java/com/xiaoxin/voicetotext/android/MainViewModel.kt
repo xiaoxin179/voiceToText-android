@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.xiaoxin.voicetotext.android.debug.DebugLogState
 import com.xiaoxin.voicetotext.android.debug.DebugLogger
+import com.xiaoxin.voicetotext.android.asr.ComputeMode
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.model.ModelDefinition
 import com.xiaoxin.voicetotext.android.model.ModelDownloadManager
@@ -19,12 +20,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedModelId = MutableStateFlow(
         preferences.getString(SELECTED_MODEL_KEY, "base") ?: "base",
     )
+    private val _computeMode = MutableStateFlow(
+        ComputeMode.fromId(preferences.getString(COMPUTE_MODE_KEY, ComputeMode.GPU.id)),
+    )
 
     init {
         DebugLogger.initialize(application)
     }
 
     val selectedModelId: StateFlow<String> = _selectedModelId
+    val computeMode: StateFlow<ComputeMode> = _computeMode
     val downloadState: StateFlow<ModelDownloadState> = modelManager.state
     val transcriptionState: StateFlow<TranscriptionState> = TranscriptionSession.state
     val debugLogState: StateFlow<DebugLogState> = DebugLogger.state
@@ -40,6 +45,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectedModel(): ModelDefinition = ModelCatalog.find(_selectedModelId.value)
+
+    fun selectComputeMode(mode: ComputeMode) {
+        _computeMode.value = mode
+        preferences.edit().putString(COMPUTE_MODE_KEY, mode.id).apply()
+        DebugLogger.log("ASR", "用户选择计算后端 mode=${mode.id}")
+    }
 
     fun modelPath(model: ModelDefinition = selectedModel()): String? {
         if (!modelManager.isInstalled(model)) return null
@@ -87,5 +98,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val PREFERENCES_NAME = "voice_to_text_preferences"
         private const val SELECTED_MODEL_KEY = "selected_model"
+        private const val COMPUTE_MODE_KEY = "compute_mode"
     }
 }

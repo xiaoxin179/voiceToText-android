@@ -27,7 +27,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.xiaoxin.voicetotext.android.R
 import com.xiaoxin.voicetotext.android.asr.LocalWhisperEngine
-import com.xiaoxin.voicetotext.android.asr.GpuSafetyPolicy
+import com.xiaoxin.voicetotext.android.asr.ComputeMode
 import com.xiaoxin.voicetotext.android.debug.DebugLogger
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
@@ -82,8 +82,12 @@ class AudioCaptureService : Service() {
         releasingProjection.set(false)
         terminationReason.set("capture_completed")
         val source = intent.getStringExtra(EXTRA_SOURCE) ?: SOURCE_SYSTEM
+        val computeMode = ComputeMode.fromId(intent.getStringExtra(EXTRA_COMPUTE_MODE))
         val modelPath = intent.getStringExtra(EXTRA_MODEL_PATH)
-        DebugLogger.log("CAPTURE", "准备监听 source=$source model=${modelPath?.let { File(it).name }}")
+        DebugLogger.log(
+            "CAPTURE",
+            "准备监听 source=$source model=${modelPath?.let { File(it).name }} computeMode=${computeMode.id}",
+        )
         if (modelPath.isNullOrBlank()) {
             DebugLogger.log("ERROR", "没有选择可用的本地模型")
             TranscriptionSession.failed("没有选择可用的本地模型")
@@ -116,7 +120,7 @@ class AudioCaptureService : Service() {
 
         val projectionResult = intent.getIntExtra(EXTRA_PROJECTION_RESULT, 0)
         val projectionData = intent.getProjectionDataCompat(EXTRA_PROJECTION_DATA)
-        val useGpu = GpuSafetyPolicy.shouldUseGpu()
+        val useGpu = computeMode == ComputeMode.GPU
         val sessionDescription = "source=$source model=${File(modelPath).name} gpuRequested=$useGpu " +
             "startedAt=${System.currentTimeMillis()}"
         DebugLogger.markCaptureActive(sessionDescription)
@@ -474,6 +478,7 @@ class AudioCaptureService : Service() {
         const val ACTION_STOP = "com.xiaoxin.voicetotext.android.action.STOP"
         const val EXTRA_SOURCE = "source"
         const val EXTRA_MODEL_PATH = "model_path"
+        const val EXTRA_COMPUTE_MODE = "compute_mode"
         const val EXTRA_PROJECTION_RESULT = "projection_result"
         const val EXTRA_PROJECTION_DATA = "projection_data"
         const val SOURCE_MIC = "mic"
@@ -492,6 +497,7 @@ class AudioCaptureService : Service() {
             context: Context,
             source: String,
             modelPath: String,
+            computeMode: ComputeMode,
             projectionResult: Int = 0,
             projectionData: Intent? = null,
         ) {
@@ -499,6 +505,7 @@ class AudioCaptureService : Service() {
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_SOURCE, source)
                 .putExtra(EXTRA_MODEL_PATH, modelPath)
+                .putExtra(EXTRA_COMPUTE_MODE, computeMode.id)
                 .putExtra(EXTRA_PROJECTION_RESULT, projectionResult)
                 .putExtra(EXTRA_PROJECTION_DATA, projectionData)
             ContextCompat.startForegroundService(context, intent)

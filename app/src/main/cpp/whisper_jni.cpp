@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -39,6 +41,18 @@ void load_accelerated_backend() {
 #ifdef VTT_VULKAN_ENABLED
     static std::once_flag once;
     std::call_once(once, [] {
+        // Qualcomm drivers can advertise optional shader features that fail during
+        // pipeline compilation. Keep baseline FP16, but disable the fragile paths.
+        setenv("GGML_VK_DISABLE_COOPMAT", "1", 1);
+        setenv("GGML_VK_DISABLE_COOPMAT2", "1", 1);
+        setenv("GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR", "1", 1);
+        setenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1", 1);
+        setenv("GGML_VK_DISABLE_DOT2", "1", 1);
+        setenv("GGML_VK_DISABLE_BFLOAT16", "1", 1);
+        setenv("GGML_VK_DISABLE_FUSION", "1", 1);
+        setenv("GGML_VK_DISABLE_GRAPH_OPTIMIZE", "1", 1);
+        setenv("GGML_VK_DISABLE_ASYNC", "1", 1);
+        setenv("GGML_VK_DISABLE_MULTI_ADD", "1", 1);
         if (ggml_backend_load("libggml-vulkan.so") == nullptr) {
             __android_log_print(ANDROID_LOG_WARN, kLogTag, "Vulkan backend is unavailable");
         }
@@ -60,6 +74,13 @@ void throw_illegal_state(JNIEnv *env, const char *message) {
     if (exception != nullptr) env->ThrowNew(exception, message);
 }
 
+void throw_native_failure(JNIEnv *env, const char *operation, const char *message) {
+    const std::string detail = std::string(operation) + " failed: " +
+            (message == nullptr ? "unknown native error" : message);
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s", detail.c_str());
+    throw_illegal_state(env, detail.c_str());
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -75,19 +96,34 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
     }
 
     const bool gpu_requested = use_gpu == JNI_TRUE;
-    if (gpu_requested) load_accelerated_backend();
-    std::string backend = gpu_requested ? available_gpu_backend_name() : std::string();
+    std::string backend;
+    whisper_context *context = nullptr;
+    try {
+        if (gpu_requested) load_accelerated_backend();
+        backend = gpu_requested ? available_gpu_backend_name() : std::string();
+    } catch (const std::exception &error) {
+        throw_native_failure(env, "Vulkan initialization", error.what());
+        return 0;
+    } catch (...) {
+        throw_native_failure(env, "Vulkan initialization", nullptr);
+        return 0;
+    }
+    if (gpu_requested && backend.empty()) {
+        throw_native_failure(env, "Vulkan initialization", "no compatible GPU backend found");
+        return 0;
+    }
     whisper_context_params context_params = whisper_context_default_params();
     context_params.use_gpu = !backend.empty();
     // Flash Attention is disabled until it is stable across Android Vulkan drivers.
     context_params.flash_attn = false;
-    auto *context = whisper_init_from_file_with_params(path.c_str(), context_params);
-    if (context == nullptr && !backend.empty()) {
-        __android_log_print(ANDROID_LOG_WARN, kLogTag, "Vulkan model init failed; retrying on CPU");
-        context_params.use_gpu = false;
-        context_params.flash_attn = false;
+    try {
         context = whisper_init_from_file_with_params(path.c_str(), context_params);
-        backend = "CPU 回退";
+    } catch (const std::exception &error) {
+        throw_native_failure(env, "Whisper model initialization", error.what());
+        return 0;
+    } catch (...) {
+        throw_native_failure(env, "Whisper model initialization", nullptr);
+        return 0;
     }
     if (context == nullptr) {
         throw_illegal_state(env, "Whisper model could not be loaded");
@@ -97,8 +133,8 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
     auto *native_context = new NativeWhisperContext();
     native_context->context = context;
     native_context->backend = backend.empty()
-            ? (gpu_requested ? "CPU 回退" : "CPU 安全模式")
-            : backend;
+            ? "CPU"
+            : std::string("Vulkan 兼容 · ") + backend.substr(std::string("Vulkan · ").size());
     __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
@@ -160,11 +196,22 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeTranscribe(
     const int available_threads = hardware_threads > 2 ? hardware_threads - 2 : hardware_threads;
     params.n_threads = std::max(1, std::min(6, available_threads));
 
-    const int status = whisper_full(
-            native_context->context,
-            params,
-            samples,
-            static_cast<int>(sample_count));
+    int status = -1;
+    try {
+        status = whisper_full(
+                native_context->context,
+                params,
+                samples,
+                static_cast<int>(sample_count));
+    } catch (const std::exception &error) {
+        env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+        throw_native_failure(env, "Whisper inference", error.what());
+        return nullptr;
+    } catch (...) {
+        env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+        throw_native_failure(env, "Whisper inference", nullptr);
+        return nullptr;
+    }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
     if (status != 0) {
         throw_illegal_state(env, "Whisper inference failed");
@@ -182,11 +229,21 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeTranscribe(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeFree(
-        JNIEnv *,
+        JNIEnv *env,
         jclass,
         jlong handle) {
     auto *native_context = reinterpret_cast<NativeWhisperContext *>(handle);
     if (native_context == nullptr) return;
-    if (native_context->context != nullptr) whisper_free(native_context->context);
+    try {
+        if (native_context->context != nullptr) whisper_free(native_context->context);
+    } catch (const std::exception &error) {
+        delete native_context;
+        throw_native_failure(env, "Whisper cleanup", error.what());
+        return;
+    } catch (...) {
+        delete native_context;
+        throw_native_failure(env, "Whisper cleanup", nullptr);
+        return;
+    }
     delete native_context;
 }

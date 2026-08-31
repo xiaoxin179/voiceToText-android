@@ -6,21 +6,16 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.os.Build
 import com.xiaoxin.voicetotext.android.debug.DebugLogger
-import com.xiaoxin.voicetotext.android.asr.GpuSafetyPolicy
 import java.io.ByteArrayOutputStream
 
 class VoiceToTextApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         DebugLogger.initialize(this)
-        val previousExitReason = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val previousExit = previousProcessExit()
             logPreviousProcessExit(previousExit)
-            previousExit?.reason
-        } else {
-            null
         }
-        GpuSafetyPolicy.initialize(this, previousExitReason)
         installCrashLogger()
         DebugLogger.log("LIFECYCLE", "Application 创建 pid=${android.os.Process.myPid()}")
     }

@@ -2517,7 +2517,8 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
     } catch (const vk::SystemError& e) {
         std::cerr << "ggml_vulkan: Compute pipeline creation failed for " << pipeline->name << std::endl;
         std::cerr << "ggml_vulkan: " << e.what() << std::endl;
-        throw e;
+        throw std::runtime_error(
+            "Vulkan pipeline '" + pipeline->name + "' creation failed: " + e.what());
     }
 
     if (vk_instance.debug_utils_support) {
