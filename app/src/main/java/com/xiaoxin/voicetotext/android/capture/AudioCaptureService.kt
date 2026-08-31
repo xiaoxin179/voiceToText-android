@@ -282,7 +282,11 @@ class AudioCaptureService : Service() {
         stopRequested.set(true)
         audioRecord?.let { runCatching { it.stop() } }
         if (stopService) {
-            if (captureJob == null) stopSelf() else TranscriptionSession.status("正在完成剩余片段")
+            if (captureJob == null) {
+                stopSelf()
+            } else {
+                TranscriptionSession.captureStopping()
+            }
         } else {
             captureJob?.cancel()
             captureJob = null

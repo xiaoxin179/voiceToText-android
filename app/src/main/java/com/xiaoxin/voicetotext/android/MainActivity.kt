@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
 
     private fun stopCapture() {
         AudioCaptureService.stop(this)
+        toast("已停止采集，正在完成剩余识别")
     }
 
     private fun toast(message: String) {

@@ -259,9 +259,9 @@ private fun ListenPage(
         ) {
             Button(
                 onClick = {
-                    if (transcriptionState.running) onStop() else onStart(source)
+                    if (transcriptionState.capturing) onStop() else onStart(source)
                 },
-                enabled = transcriptionState.running || modelInstalled,
+                enabled = transcriptionState.capturing || (!transcriptionState.running && modelInstalled),
                 modifier = Modifier
                     .weight(1f)
                     .height(52.dp),
@@ -269,11 +269,17 @@ private fun ListenPage(
                 colors = ButtonDefaults.buttonColors(containerColor = SwissBlue),
             ) {
                 Icon(
-                    if (transcriptionState.running) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    if (transcriptionState.capturing) Icons.Default.Stop else Icons.Default.PlayArrow,
                     contentDescription = null,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text(if (transcriptionState.running) "停止监听" else "开始监听")
+                Text(
+                    when {
+                        transcriptionState.capturing -> "停止监听"
+                        transcriptionState.running -> "正在收尾"
+                        else -> "开始监听"
+                    },
+                )
             }
             IconButton(
                 onClick = onClear,
@@ -356,7 +362,14 @@ private fun RuntimePanel(
                         .background(if (state.running) SwissBlue else Color(0xFF303034), RoundedCornerShape(4.dp))
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                 ) {
-                    Text(if (state.running) "识别中" else "待机", fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            state.capturing -> "识别中"
+                            state.running -> "收尾中"
+                            else -> "待机"
+                        },
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
             }
             HorizontalDivider(color = Color(0xFF3A3A3E))

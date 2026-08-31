@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.update
 
 data class TranscriptionState(
     val running: Boolean = false,
+    val capturing: Boolean = false,
     val source: String = "",
     val modelName: String = "",
     val status: String = "未开始",
@@ -31,6 +32,7 @@ object TranscriptionSession {
     fun started(source: String, modelName: String) {
         _state.value = TranscriptionState(
             running = true,
+            capturing = true,
             source = source,
             modelName = modelName,
             status = "正在监听",
@@ -39,6 +41,12 @@ object TranscriptionSession {
 
     fun status(message: String) {
         _state.update { it.copy(status = message) }
+    }
+
+    fun captureStopping() {
+        _state.update { current ->
+            if (current.running) current.copy(capturing = false, status = "正在完成剩余片段") else current
+        }
     }
 
     fun appendRaw(text: String) {
@@ -80,13 +88,14 @@ object TranscriptionSession {
         file.writeText(current.rawText, StandardCharsets.UTF_8)
         _state.value = current.copy(
             running = false,
+            capturing = false,
             status = "监听结束",
             transcriptPath = file.absolutePath,
         )
     }
 
     fun failed(message: String) {
-        _state.update { it.copy(running = false, status = "失败", error = message) }
+        _state.update { it.copy(running = false, capturing = false, status = "失败", error = message) }
     }
 
     fun clear() {
