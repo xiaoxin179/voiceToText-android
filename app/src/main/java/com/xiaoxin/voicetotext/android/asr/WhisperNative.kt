@@ -9,6 +9,9 @@ internal class WhisperNative private constructor() {
         external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String): String
 
         @JvmStatic
+        external fun nativeGetBackend(handle: Long): String
+
+        @JvmStatic
         external fun nativeFree(handle: Long)
     }
 }
@@ -16,12 +19,15 @@ internal class WhisperNative private constructor() {
 class LocalWhisperEngine : AutoCloseable {
     private var handle: Long = 0L
     private var nativeLoaded = false
+    var backend: String = "未初始化"
+        private set
 
     fun open(modelPath: String) {
         close()
         loadNativeLibrary()
         handle = WhisperNative.nativeInit(modelPath)
         check(handle != 0L) { "无法加载本地 Whisper 模型：$modelPath" }
+        backend = WhisperNative.nativeGetBackend(handle)
     }
 
     fun transcribe(samples: FloatArray, language: String = "zh"): String {
@@ -40,5 +46,6 @@ class LocalWhisperEngine : AutoCloseable {
             WhisperNative.nativeFree(handle)
             handle = 0L
         }
+        backend = "未初始化"
     }
 }

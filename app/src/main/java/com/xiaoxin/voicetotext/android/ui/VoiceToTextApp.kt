@@ -389,7 +389,8 @@ private fun RuntimePanel(
             )
             Text(
                 "${sourceLabel(if (state.running) state.source else selectedSource)} · " +
-                    (if (state.running) state.modelName else selectedModelName),
+                    (if (state.running) state.modelName else selectedModelName) + " · " +
+                    (if (state.running) state.backend else "GPU 优先"),
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFB8B8BE),
                 maxLines = 1,

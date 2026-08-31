@@ -11,8 +11,23 @@ captures/
 third_party/*
 !third_party/whisper.cpp-v1.9.1/
 !third_party/whisper.cpp-v1.9.1/**
+!third_party/Vulkan-Headers-v1.3.296/
+third_party/Vulkan-Headers-v1.3.296/*
+!third_party/Vulkan-Headers-v1.3.296/include/
+!third_party/Vulkan-Headers-v1.3.296/include/**
+!third_party/Vulkan-Headers-v1.3.296/LICENSE.md
+!third_party/SPIRV-Headers-v1.3.296/
+third_party/SPIRV-Headers-v1.3.296/*
+!third_party/SPIRV-Headers-v1.3.296/include/
+third_party/SPIRV-Headers-v1.3.296/include/*
+!third_party/SPIRV-Headers-v1.3.296/include/spirv/
+third_party/SPIRV-Headers-v1.3.296/include/spirv/*
+!third_party/SPIRV-Headers-v1.3.296/include/spirv/unified1/
+third_party/SPIRV-Headers-v1.3.296/include/spirv/unified1/*
+!third_party/SPIRV-Headers-v1.3.296/include/spirv/unified1/spirv.hpp
+!third_party/SPIRV-Headers-v1.3.296/LICENSE
 
-# Only the whisper.cpp core and ggml CPU backend are needed by this Android app.
+# Keep the whisper.cpp core plus the CPU and Vulkan backends used by this app.
 third_party/whisper.cpp-v1.9.1/.devops/
 third_party/whisper.cpp-v1.9.1/.github/
 third_party/whisper.cpp-v1.9.1/.pi/
@@ -39,7 +54,6 @@ third_party/whisper.cpp-v1.9.1/ggml/src/ggml-openvino/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-rpc/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-sycl/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-virtgpu/
-third_party/whisper.cpp-v1.9.1/ggml/src/ggml-vulkan/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-webgpu/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-zdnn/
 third_party/whisper.cpp-v1.9.1/ggml/src/ggml-zendnn/

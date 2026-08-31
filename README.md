@@ -10,6 +10,8 @@ DeepSeek, or any cloud transcription service.
 
 - Select either the phone microphone or the phone's internal playback audio.
 - Run Whisper locally on the Android device through `whisper.cpp`.
+- Use the Vulkan GPU backend on 64-bit ARM phones when the device and driver
+  support it, with automatic CPU fallback when Vulkan initialization fails.
 - Select a local model and keep the selected model in the app's fixed model directory.
 - Download models with progress reporting, pause/resume, HTTP Range based resume,
   and automatic fallback between the mainland-friendly `hf-mirror.com` endpoint
@@ -24,8 +26,10 @@ DeepSeek, or any cloud transcription service.
 
 The first implementation targets Android 10 or newer. The debug build includes
 `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` native libraries; arm64 is the
-primary phone target. System playback capture requires the user to approve a
-MediaProjection request.
+primary phone target and the only ABI that includes the Vulkan backend. The
+other ABIs continue to use the CPU backend. The listening screen shows the
+backend selected for the loaded model. System playback capture requires the
+user to approve a MediaProjection request.
 On Android 14 or newer, the app requests the entire default display so playback
 from the app opened after authorization is not excluded by single-app sharing.
 Some apps and protected media can refuse playback capture, which is an Android
@@ -49,6 +53,10 @@ reproducible without a build-time GitHub clone. The Android app owns the JNI
 adapter and does not copy the Windows project's Python runtime or service
 layer.
 
+The Vulkan build also pins the official Khronos Vulkan and SPIR-V headers at
+the matching `1.3.296` release under `third_party`. They are compile-time
+dependencies and do not introduce a network or cloud runtime dependency.
+
 The downloadable Whisper files come from the `ggerganov/whisper.cpp` model
 repository on Hugging Face. The app tries `hf-mirror.com` first because direct
 access to Hugging Face can time out on some mobile networks, then falls back to
@@ -57,12 +65,19 @@ the mirror is only a transport fallback, not a different model.
 
 ## Build
 
-Install Android Studio with the Android SDK, NDK, and CMake 3.22.1. Then open
-this directory as an Android project and run:
+Install Android Studio with the Android SDK, NDK, and CMake 3.22.1. Building
+the ARM64 Vulkan shaders on Windows also requires a native Windows C/C++
+compiler. Set `VTT_HOST_TOOLCHAIN_BIN` to a directory containing
+`x86_64-w64-mingw32-clang.exe` and `x86_64-w64-mingw32-clang++.exe`; the
+llvm-mingw toolchain is supported. Then open this directory as an Android
+project and run:
 
 ```powershell
 ./gradlew assembleDebug
 ```
+
+The generated shader helper is statically linked, so its compiler runtime does
+not need to be added to `PATH` while Gradle invokes it.
 
 The generated debug APK is written to:
 

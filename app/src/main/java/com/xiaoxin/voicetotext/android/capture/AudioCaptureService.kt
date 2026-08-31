@@ -145,6 +145,7 @@ class AudioCaptureService : Service() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             LocalWhisperEngine().use { engine ->
                 engine.open(modelPath)
+                TranscriptionSession.backend(engine.backend)
                 for (chunkFile in channel) {
                     TranscriptionSession.status("本地识别中")
                     val startedAt = SystemClock.elapsedRealtime()

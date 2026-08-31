@@ -14,6 +14,7 @@ data class TranscriptionState(
     val capturing: Boolean = false,
     val source: String = "",
     val modelName: String = "",
+    val backend: String = "正在检测",
     val status: String = "未开始",
     val rawText: String = "",
     val inputRms: Float = 0f,
@@ -41,6 +42,10 @@ object TranscriptionSession {
 
     fun status(message: String) {
         _state.update { it.copy(status = message) }
+    }
+
+    fun backend(name: String) {
+        _state.update { it.copy(backend = name) }
     }
 
     fun captureStopping() {

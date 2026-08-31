@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 
+#include "ggml-backend.h"
 #include "whisper.h"
 
 namespace {
@@ -15,7 +17,34 @@ constexpr const char *kLogTag = "voiceToText-whisper";
 
 struct NativeWhisperContext {
     whisper_context *context = nullptr;
+    std::string backend = "CPU";
 };
+
+std::string available_gpu_backend_name() {
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            ggml_backend_t probe = ggml_backend_dev_init(device, nullptr);
+            if (probe == nullptr) continue;
+            ggml_backend_free(probe);
+            const char *description = ggml_backend_dev_description(device);
+            return std::string("Vulkan · ") + (description == nullptr ? "GPU" : description);
+        }
+    }
+    return {};
+}
+
+void load_accelerated_backend() {
+#ifdef VTT_VULKAN_ENABLED
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (ggml_backend_load("libggml-vulkan.so") == nullptr) {
+            __android_log_print(ANDROID_LOG_WARN, kLogTag, "Vulkan backend is unavailable");
+        }
+    });
+#endif
+}
 
 std::string to_utf8(JNIEnv *env, jstring value) {
     if (value == nullptr) return {};
@@ -44,9 +73,19 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
         return 0;
     }
 
+    load_accelerated_backend();
+    std::string backend = available_gpu_backend_name();
     whisper_context_params context_params = whisper_context_default_params();
-    context_params.use_gpu = false;
+    context_params.use_gpu = !backend.empty();
+    context_params.flash_attn = context_params.use_gpu;
     auto *context = whisper_init_from_file_with_params(path.c_str(), context_params);
+    if (context == nullptr && !backend.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "Vulkan model init failed; retrying on CPU");
+        context_params.use_gpu = false;
+        context_params.flash_attn = false;
+        context = whisper_init_from_file_with_params(path.c_str(), context_params);
+        backend = "CPU 回退";
+    }
     if (context == nullptr) {
         throw_illegal_state(env, "Whisper model could not be loaded");
         return 0;
@@ -54,8 +93,24 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeInit(
 
     auto *native_context = new NativeWhisperContext();
     native_context->context = context;
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "loaded whisper model: %s", path.c_str());
+    native_context->backend = backend.empty() ? "CPU 回退" : backend;
+    __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "loaded whisper model: %s, backend: %s",
+            path.c_str(),
+            native_context->backend.c_str());
     return reinterpret_cast<jlong>(native_context);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeGetBackend(
+        JNIEnv *env,
+        jclass,
+        jlong handle) {
+    auto *native_context = reinterpret_cast<NativeWhisperContext *>(handle);
+    if (native_context == nullptr) return env->NewStringUTF("未知");
+    return env->NewStringUTF(native_context->backend.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
