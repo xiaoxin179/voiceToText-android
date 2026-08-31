@@ -334,7 +334,7 @@ class ModelDownloadManager(context: Context) : AutoCloseable {
         fun formatBytes(bytes: Long): String {
             if (bytes <= 0L) return "0 B"
             if (bytes < 1024L) return "$bytes B"
-            val units = arrayOf("KB", "MB", "GB")
+            val units = arrayOf("B", "KB", "MB", "GB")
             var value = bytes.toDouble()
             var unit = 0
             while (value >= 1024.0 && unit < units.lastIndex) {

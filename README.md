@@ -15,6 +15,7 @@ DeepSeek, or any cloud transcription service.
   and automatic fallback between the mainland-friendly `hf-mirror.com` endpoint
   and the official Hugging Face endpoint.
 - Show download state immediately after tapping, including network wait and failures.
+- Display download sizes with the correct binary units (KB, MB, and GB).
 - Preserve the recognition text as returned by the local model.
 - Save the raw transcript on the phone for later processing on a computer.
 
