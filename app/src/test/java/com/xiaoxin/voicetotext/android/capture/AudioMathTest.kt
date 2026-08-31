@@ -20,4 +20,12 @@ class AudioMathTest {
         assertEquals(16_000, chunks.single().size)
         assertEquals(0.25f, audioRms(chunks.single()), 0.000001f)
     }
+
+    @Test
+    fun defaultChunkerEmitsEveryThreeSeconds() {
+        val chunker = PcmChunker(inputRate = 16_000)
+
+        assertEquals(0, chunker.append(FloatArray(32_000)).size)
+        assertEquals(1, chunker.append(FloatArray(16_000)).size)
+    }
 }

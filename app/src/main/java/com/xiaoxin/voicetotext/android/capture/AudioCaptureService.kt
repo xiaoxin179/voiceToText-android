@@ -18,6 +18,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -26,18 +27,23 @@ import com.xiaoxin.voicetotext.android.asr.LocalWhisperEngine
 import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
 import java.io.File
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 
 class AudioCaptureService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
+    private val recognitionDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "whisper-recognition")
+    }.asCoroutineDispatcher()
     private var captureJob: Job? = null
     private var audioRecord: AudioRecord? = null
     private var mediaProjection: MediaProjection? = null
@@ -127,7 +133,8 @@ class AudioCaptureService : Service() {
         val modelName = ModelCatalog.all.firstOrNull { it.fileName == File(modelPath).name }?.displayName ?: File(modelPath).name
         TranscriptionSession.started(source, modelName)
 
-        val recognizer = launch(Dispatchers.Default) {
+        val recognizer = launch(recognitionDispatcher) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             LocalWhisperEngine().use { engine ->
                 engine.open(modelPath)
                 for (chunk in channel) {
@@ -277,6 +284,7 @@ class AudioCaptureService : Service() {
     override fun onDestroy() {
         stopCapture(stopService = false)
         serviceScope.coroutineContext.cancel()
+        recognitionDispatcher.close()
         super.onDestroy()
     }
 

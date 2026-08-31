@@ -30,7 +30,7 @@ internal fun resampleLinear(input: FloatArray, inputRate: Int, targetRate: Int):
 
 internal class PcmChunker(
     private val inputRate: Int,
-    private val chunkSeconds: Int = 5,
+    private val chunkSeconds: Int = 3,
 ) {
     private val targetRate = 16_000
     private val targetChunkSize = targetRate * chunkSeconds
