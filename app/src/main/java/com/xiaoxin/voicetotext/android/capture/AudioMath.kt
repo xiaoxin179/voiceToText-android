@@ -1,5 +1,6 @@
 package com.xiaoxin.voicetotext.android.capture
 
+import java.io.File
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -30,7 +31,7 @@ internal fun resampleLinear(input: FloatArray, inputRate: Int, targetRate: Int):
 
 internal class PcmChunker(
     private val inputRate: Int,
-    private val chunkSeconds: Int = 3,
+    private val chunkSeconds: Int = 5,
 ) {
     private val targetRate = 16_000
     private val targetChunkSize = targetRate * chunkSeconds
@@ -53,5 +54,24 @@ internal class PcmChunker(
         val result = pending
         pending = FloatArray(0)
         return result
+    }
+}
+
+internal fun writePcm16(file: File, samples: FloatArray) {
+    val bytes = ByteArray(samples.size * 2)
+    samples.forEachIndexed { index, sample ->
+        val value = (sample.coerceIn(-1f, 1f) * 32767f).roundToInt().toShort().toInt()
+        bytes[index * 2] = (value and 0xff).toByte()
+        bytes[index * 2 + 1] = ((value shr 8) and 0xff).toByte()
+    }
+    file.outputStream().buffered().use { it.write(bytes) }
+}
+
+internal fun readPcm16(file: File): FloatArray {
+    val bytes = file.readBytes()
+    return FloatArray(bytes.size / 2) { index ->
+        val low = bytes[index * 2].toInt() and 0xff
+        val high = bytes[index * 2 + 1].toInt()
+        ((high shl 8) or low).toShort() / 32768.0f
     }
 }

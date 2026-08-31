@@ -19,6 +19,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -28,6 +29,7 @@ import com.xiaoxin.voicetotext.android.model.ModelCatalog
 import com.xiaoxin.voicetotext.android.transcript.TranscriptionSession
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +49,7 @@ class AudioCaptureService : Service() {
     private var captureJob: Job? = null
     private var audioRecord: AudioRecord? = null
     private var mediaProjection: MediaProjection? = null
+    private val stopRequested = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -63,6 +66,7 @@ class AudioCaptureService : Service() {
 
     private fun startCapture(intent: Intent) {
         stopCapture(stopService = false)
+        stopRequested.set(false)
         val source = intent.getStringExtra(EXTRA_SOURCE) ?: SOURCE_SYSTEM
         val modelPath = intent.getStringExtra(EXTRA_MODEL_PATH)
         if (modelPath.isNullOrBlank()) {
@@ -127,7 +131,11 @@ class AudioCaptureService : Service() {
         }
         val record = buildAudioRecord(source, projection)
         audioRecord = record
-        val channel = Channel<FloatArray>(capacity = 4)
+        val queueDirectory = File(cacheDir, "transcription-queue").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val channel = Channel<File>(capacity = Channel.UNLIMITED)
         val chunker = PcmChunker(record.sampleRate)
         val outputRoot = filesDir
         val modelName = ModelCatalog.all.firstOrNull { it.fileName == File(modelPath).name }?.displayName ?: File(modelPath).name
@@ -137,15 +145,22 @@ class AudioCaptureService : Service() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             LocalWhisperEngine().use { engine ->
                 engine.open(modelPath)
-                for (chunk in channel) {
+                for (chunkFile in channel) {
                     TranscriptionSession.status("本地识别中")
-                    val rawText = engine.transcribe(chunk)
-                    TranscriptionSession.chunkProcessed()
+                    val startedAt = SystemClock.elapsedRealtime()
+                    val rawText = try {
+                        engine.transcribe(readPcm16(chunkFile))
+                    } finally {
+                        chunkFile.delete()
+                    }
+                    TranscriptionSession.chunkProcessed(SystemClock.elapsedRealtime() - startedAt)
                     if (rawText.isBlank()) {
                         TranscriptionSession.status("收到音频，但当前片段未识别出文字")
                     } else {
                         TranscriptionSession.appendRaw(rawText)
-                        TranscriptionSession.status("正在监听")
+                        TranscriptionSession.status(
+                            if (stopRequested.get()) "正在完成剩余片段" else "正在监听",
+                        )
                     }
                 }
             }
@@ -157,8 +172,9 @@ class AudioCaptureService : Service() {
             var lastReportedSecond = 0
             var reportRms = 0f
             var signalDetected = false
+            var chunkIndex = 0L
             record.startRecording()
-            while (isActive) {
+            while (isActive && !stopRequested.get()) {
                 val count = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                 if (count <= 0) continue
                 val samples = FloatArray(count) { index -> buffer[index] / 32768.0f }
@@ -184,7 +200,10 @@ class AudioCaptureService : Service() {
                 }
                 for (chunk in chunker.append(samples)) {
                     if (audioRms(chunk) >= MIN_AUDIO_RMS) {
-                        channel.send(chunk)
+                        val chunkFile = File(queueDirectory, "%08d.pcm".format(chunkIndex++))
+                        writePcm16(chunkFile, chunk)
+                        TranscriptionSession.chunkQueued()
+                        channel.send(chunkFile)
                     }
                 }
             }
@@ -197,9 +216,18 @@ class AudioCaptureService : Service() {
             runCatching { record.stop() }
             chunker.flush()
                 ?.takeIf { audioRms(it) >= MIN_AUDIO_RMS }
-                ?.let { channel.trySend(it) }
+                ?.let { chunk ->
+                    val chunkFile = File(queueDirectory, "%08d.pcm".format(Long.MAX_VALUE))
+                    writePcm16(chunkFile, chunk)
+                    TranscriptionSession.chunkQueued()
+                    if (channel.trySend(chunkFile).isFailure) chunkFile.delete()
+                }
             channel.close()
+            if (TranscriptionSession.state.value.queuedChunks > 0) {
+                TranscriptionSession.status("正在完成剩余片段")
+            }
             recognizer.join()
+            queueDirectory.deleteRecursively()
             TranscriptionSession.stopped(outputRoot)
         }
     }
@@ -251,10 +279,14 @@ class AudioCaptureService : Service() {
     }
 
     private fun stopCapture(stopService: Boolean = true) {
-        captureJob?.cancel()
-        captureJob = null
+        stopRequested.set(true)
         audioRecord?.let { runCatching { it.stop() } }
-        if (stopService) stopSelf()
+        if (stopService) {
+            if (captureJob == null) stopSelf() else TranscriptionSession.status("正在完成剩余片段")
+        } else {
+            captureJob?.cancel()
+            captureJob = null
+        }
     }
 
     private fun notification(): Notification {

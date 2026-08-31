@@ -369,6 +369,12 @@ private fun RuntimePanel(
                 Metric("识别", "${state.processedChunks} 段")
             }
             Text(
+                "待识别 ${state.queuedChunks} 段 · 最近耗时 " +
+                    if (state.lastInferenceMillis > 0L) "${state.lastInferenceMillis / 1000.0}s" else "--",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB8B8BE),
+            )
+            Text(
                 "${sourceLabel(if (state.running) state.source else selectedSource)} · " +
                     (if (state.running) state.modelName else selectedModelName),
                 style = MaterialTheme.typography.bodySmall,

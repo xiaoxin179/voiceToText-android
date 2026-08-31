@@ -18,6 +18,8 @@ data class TranscriptionState(
     val inputRms: Float = 0f,
     val capturedSeconds: Int = 0,
     val processedChunks: Int = 0,
+    val queuedChunks: Int = 0,
+    val lastInferenceMillis: Long = 0L,
     val transcriptPath: String? = null,
     val error: String? = null,
 )
@@ -53,9 +55,19 @@ object TranscriptionSession {
         }
     }
 
-    fun chunkProcessed() {
+    fun chunkQueued() {
         _state.update { current ->
-            current.copy(processedChunks = current.processedChunks + 1)
+            current.copy(queuedChunks = current.queuedChunks + 1)
+        }
+    }
+
+    fun chunkProcessed(inferenceMillis: Long) {
+        _state.update { current ->
+            current.copy(
+                processedChunks = current.processedChunks + 1,
+                queuedChunks = (current.queuedChunks - 1).coerceAtLeast(0),
+                lastInferenceMillis = inferenceMillis,
+            )
         }
     }
 

@@ -98,7 +98,7 @@ Java_com_xiaoxin_voicetotext_android_asr_WhisperNative_nativeTranscribe(
     params.suppress_nst = true;
     const int hardware_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
     const int available_threads = hardware_threads > 2 ? hardware_threads - 2 : hardware_threads;
-    params.n_threads = std::max(1, std::min(4, available_threads));
+    params.n_threads = std::max(1, std::min(6, available_threads));
 
     const int status = whisper_full(
             native_context->context,

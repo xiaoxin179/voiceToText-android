@@ -22,10 +22,25 @@ class AudioMathTest {
     }
 
     @Test
-    fun defaultChunkerEmitsEveryThreeSeconds() {
+    fun defaultChunkerEmitsEveryFiveSeconds() {
         val chunker = PcmChunker(inputRate = 16_000)
 
-        assertEquals(0, chunker.append(FloatArray(32_000)).size)
+        assertEquals(0, chunker.append(FloatArray(64_000)).size)
         assertEquals(1, chunker.append(FloatArray(16_000)).size)
+    }
+
+    @Test
+    fun pcmQueueRoundTripsSamples() {
+        val file = kotlin.io.path.createTempFile(suffix = ".pcm").toFile()
+        val samples = floatArrayOf(-1f, -0.5f, 0f, 0.5f, 1f)
+
+        writePcm16(file, samples)
+        val restored = readPcm16(file)
+
+        assertEquals(samples.size, restored.size)
+        samples.forEachIndexed { index, sample ->
+            assertEquals(sample, restored[index], 0.0001f)
+        }
+        file.delete()
     }
 }
